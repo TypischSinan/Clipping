@@ -41,6 +41,7 @@ Three things set it apart from most open-source clippers:
 - [Design decisions](#design-decisions)
 - [Maximizing clips per video](#maximizing-clips-per-video)
 - [Captions](#captions)
+- [Dead-air removal](#dead-air-removal)
 - [Known limitations](#known-limitations)
 - [Troubleshooting](#troubleshooting)
 - [Tests](#tests)
@@ -100,6 +101,7 @@ keyframes. Rendering drops the audio stream instead of failing.
 | 4 | Audio energy | ffmpeg + numpy | Loudness envelope, peaks |
 | 5 | Moment selection | Claude Opus 5 *or* a Claude Code session | Clips with hook, caption, score |
 | 6 | Reframe | OpenCV / YuNet | 9:16 with subject tracking |
+| 6b | Dead-air removal | transcript + energy curve | Speech pauses cut out |
 | 7 | Captions | ASS | Word-by-word highlighting + hook |
 | 8 | Render | ffmpeg | `out/<id>/NNN_score_title.mp4` |
 
@@ -118,7 +120,10 @@ out/<video-id>/
 ```
 
 `clips.json` is what you need when uploading: for each clip the finished TikTok
-caption including hashtags, the hook text, and the source timestamps.
+caption including hashtags, the hook text, the source timestamps, and
+`output_duration` — the length after dead-air removal, which is what the file
+actually runs. It also records the render config the files were produced with, so
+the next build can tell whether they still match what you asked for.
 
 ---
 
@@ -262,10 +267,14 @@ Stages 6–8 from the stored selection.
 |---|---|
 | `--aspect` | Output format: `9:16` (default), `4:5`, `1:1` |
 | `--no-captions` | Render without burned-in captions |
+| `--no-silence` | Keep speech pauses instead of cutting them out |
 | `--force` | Re-render clips that already exist |
 
-Clips already on disk are reused. Changing one caption parameter otherwise
-costs a full pass over every clip, and the analysis is cached anyway.
+Clips already on disk are reused — but only the ones that were rendered with the
+same output settings. Change the aspect ratio, the captions, dead-air removal or
+the encoder, and they are rebuilt without being asked. The filename carries index,
+score and title and nothing about the format, so `clips.json` records a hash of the
+render config; a build reads it back before trusting anything on disk.
 
 ### `clipper clean [video-id]`
 
@@ -288,6 +297,7 @@ Everything in one go. In addition to the `analyze` options:
 |---|---|
 | `--no-llm` | Heuristic selection instead of Claude |
 | `--no-captions` | No burned-in captions |
+| `--no-silence` | Keep speech pauses instead of cutting them out |
 | `--aspect` | Output format: `9:16` (default), `4:5`, `1:1` |
 | `--reselect` | Recompute only the selection, keep the rest of the cache |
 
@@ -374,6 +384,18 @@ fallback chain is: motion centroid → previous shot's position → frame centre
 | `pop` | `true` | Briefly scale up the active word |
 | `uppercase` / `strip_punctuation` | `true` / `true` | |
 | `hook.*` | | Separate block for the hook overlay |
+
+### `silence`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Dead-air removal. `--no-silence` turns it off per run |
+| `min_gap` | `0.6` | Shortest word gap that counts as a pause |
+| `padding` | `0.12` | Kept on each side, so the cut misses the last syllable |
+| `max_energy` | `0.35` | Loudness ceiling for a gap to count as empty |
+| `min_removed` | `0.25` | Cuts shorter than this are not worth the jump |
+
+See [Dead-air removal](#dead-air-removal) for what those numbers do.
 
 ### `render`
 
@@ -500,6 +522,79 @@ Umlauts and special characters work (`FÜR`, `GRÖSSTE`, `ÄÖÜ`). With `upperc
 
 ---
 
+## Dead-air removal
+
+Long-form pacing leaves gaps that short-form cannot afford: a speaker breathes, walks
+across the set, waits for a reaction. The renderer cuts those out and closes the gap.
+Turn it off with `--no-silence` or `silence.enabled: false`.
+
+**Two signals have to agree.** A gap between two transcribed words, at least `min_gap`
+long — and audio energy under `max_energy` across that gap.
+
+The second condition is the one that carries the feature. On reaction and challenge
+content most word gaps are not silent at all: music runs underneath, something
+explodes, a crowd reacts. Cutting on the transcript alone would delete exactly the
+moments the clip was picked for. Measured over 14 minutes of source, 160 gaps longer
+than 0.6 s — only about 40% of them are actually quiet.
+
+What the energy gate costs and buys, measured across 34 clips (848 s of material):
+
+| `max_energy` | Removed | Cuts | Clips touched |
+|---|---|---|---|
+| 0.20 | 15.3 s (1.8%) | 20 | 13/34 |
+| **0.35** (default) | **19.7 s (2.3%)** | **26** | **18/34** |
+| 0.50 | 33.5 s (4.0%) | 34 | 23/34 |
+| no gate at all | 68.1 s (8.0%) | 61 | 27/34 |
+
+Turning the gate off nearly triples the yield — and every extra second comes out of a
+gap that had sound in it. 2.3% is the honest number for material like this; a talking-head
+podcast, where the pauses really are empty, gives up far more.
+
+**Only gaps between words are touched, never the clip edges.** The start and end were
+snapped onto shot boundaries deliberately ([The crop stays static per shot](#the-crop-stays-static-per-shot)
+explains why boundaries matter), and trimming into them would quietly undo that.
+
+### Every cut lands on a frame boundary
+
+Video keeps whole frames, audio keeps whole sample blocks. If the two round a cut
+differently, the error is a random walk that grows with the number of cuts — and it is
+invisible until someone watches a long clip and the lips stop matching.
+
+That is not hypothetical. Cutting the audio with a decoder-sized block (~21 ms) against
+33 ms video frames, measured by cross-correlating the rendered audio against the exact
+concatenation the plan asked for:
+
+| Position in the clip | Offset |
+|---|---|
+| 2% | +0.00 ms |
+| 20% | +33.33 ms |
+| 40% | +33.33 ms |
+| 60% | +66.67 ms |
+| 80% | +100.00 ms |
+
+Three things together fix it, and all three are needed:
+
+1. **Cut points snap to the output frame grid**, including the clip tail — a shot
+   boundary lands wherever it lands, almost never on a frame.
+2. **`asetnsamples` pins audio to one block per video frame**, so both sides have the
+   same grid to cut on.
+3. **The select expression compares against half-frame positions.** The interval bounds
+   sit exactly on frame positions and ffmpeg's `between` is inclusive at both ends, so
+   comparing against them leaves it to floating point whether the edge frame survives —
+   independently for video and audio. Half a frame away is a position no frame ever
+   occupies, so each interval keeps exactly `(b - a) × fps` frames on both sides,
+   whatever the arithmetic does.
+
+Same measurement afterwards, on three real clips with 2 to 4 cuts each: a constant
+±0.2 ms across the whole clip, correlation 0.999. Under a deliberately reckless setting
+that forces 13 cuts into 90 seconds: 0.00 ms at every measurement point, and the audio
+matches the plan to the sample.
+
+Captions are remapped onto the compressed timeline before anything else runs, so the
+`max_gap` block break correctly stops firing on a pause that is no longer there.
+
+---
+
 ## Known limitations
 
 **Wide establishing shots with a static, faceless subject.** For example a trap at the
@@ -581,7 +676,7 @@ python -m pytest -q
 python -m ruff check src tests
 ```
 
-45 tests, run on every push and pull request by the CI workflow. The focus is on cut boundaries and caption layout — that's where a bug only
+65 tests, run on every push and pull request by the CI workflow. The focus is on cut boundaries and caption layout — that's where a bug only
 shows up when you watch the result, not as an exception. These tests caught three real
 bugs during development:
 
@@ -590,6 +685,10 @@ bugs during development:
 - `snap_end_within` could return an end past the last shot boundary in its fallback,
   producing clips beyond the end of the video
 - Length correction destroyed the shot snapping computed just before it
+
+A fourth was found by measurement rather than by a test, and now has one: reusing a
+rendered clip went by filename alone, so `build --aspect 4:5` reported success and
+handed back the 9:16 files from the previous run.
 
 ---
 
@@ -609,6 +708,7 @@ src/clipper/
     vision.py            Keyframe picking and extraction
     select.py            Prompt, LLM call, heuristic, post-processing
     reframe.py           YuNet, motion centroid, crop planning
+    silence.py           Dead-air detection, frame-grid snapping
     captions.py          ASS generation, block layout, hook overlay
     render.py            ffmpeg filtergraph and encoding
   utils/
@@ -616,7 +716,7 @@ src/clipper/
     cuda.py              CUDA DLL paths on Windows
     cache.py             JSON caching per stage
 config/default.yaml      Every parameter, with comments
-tests/test_pipeline.py   34 tests
+tests/test_pipeline.py   65 tests
 work/<video-id>/         Cache: source, transcript, shots, energy, keyframes
 out/<video-id>/          Finished clips + clips.json
 ```

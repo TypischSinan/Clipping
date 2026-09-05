@@ -92,6 +92,25 @@ captions:
     max_lines: 3
     uppercase: true
 
+silence:
+  # Dead-air removal: cut speech pauses out of the finished clip. Turn off with
+  # --no-silence, or here.
+  enabled: true
+  # Only a gap between two transcribed words counts, and only from this length.
+  # Below that it is breathing, not a pause.
+  min_gap: 0.6
+  # Kept on each side of the gap, so the cut does not land on the last syllable.
+  padding: 0.12
+  # Normalised loudness ceiling for a gap to count as empty. This is the check
+  # that carries the feature: on reaction content most word gaps are full of
+  # music, crowd noise or an explosion, and cutting on the transcript alone
+  # would delete exactly the moments the clip was picked for. Measured on 14
+  # minutes of source: 160 gaps over 0.6s, only ~40% of them actually quiet.
+  max_energy: 0.35
+  # A cut shorter than this is not worth the jump. Below roughly a quarter of a
+  # second the viewer only registers the glitch, not the tighter pacing.
+  min_removed: 0.25
+
 render:
   # Parallel renders. Without NVENC libx264 is the bottleneck; 4 uses the CPU
   # well without making the machine unusable.

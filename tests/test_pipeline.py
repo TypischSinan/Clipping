@@ -13,12 +13,23 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import numpy as np
+
 from clipper.config import load_config
-from clipper.models import Candidate, ClipPlan, CropKeyframe, Segment, Shot, Word
-from clipper.stages.captions import _blocks, _render_block, _wrap
-from clipper.stages.render import _crop_x_expr, _ffmpeg_args
+from clipper.models import (
+    Candidate,
+    ClipPlan,
+    CropKeyframe,
+    Segment,
+    Shot,
+    TimeMap,
+    Word,
+)
+from clipper.stages.captions import _blocks, _render_block, _wrap, build_ass
+from clipper.stages.render import _crop_x_expr, _ffmpeg_args, _select_expr, fingerprint
 from clipper.stages.scenes import snap_end_within, snap_to_shots
 from clipper.stages.select import _avoid_word_split, _finalize
+from clipper.stages.silence import plan_cuts
 
 
 @pytest.fixture
@@ -503,3 +514,209 @@ def test_fmt_size_rounds_per_unit():
     assert _fmt_size(512) == "512 B"
     assert _fmt_size(4096) == "4.0 KB"
     assert _fmt_size(3_000_000_000).endswith("GB")
+
+
+# --- Dead-air removal -------------------------------------------------------
+
+def quiet(level: float = 0.1, span: float = 30.0) -> tuple[np.ndarray, np.ndarray]:
+    times = np.arange(0.0, span, 0.25)
+    return times, np.full(len(times), level)
+
+
+def spoken(*pairs: tuple[float, float, str]) -> list[Segment]:
+    ws = [Word(start=a, end=b, text=t) for a, b, t in pairs]
+    return [
+        Segment(
+            start=ws[0].start,
+            end=ws[-1].end,
+            text=" ".join(w.text for w in ws),
+            words=ws,
+        )
+    ]
+
+
+def a_gap_clip() -> list[Segment]:
+    """Two words with a 1.5 s hole between them, inside a clip from 8 s to 16 s."""
+    return spoken((10.0, 10.5, "one"), (12.0, 12.5, "two"))
+
+
+def test_silence_cuts_a_quiet_gap(cfg):
+    times, energy = quiet(0.1)
+    tm = plan_cuts(a_gap_clip(), times, energy, 8.0, 16.0, cfg, 30.0)
+    assert tm.cuts == 1
+    # 1.5 s gap minus 0.12 s of padding on each side.
+    assert tm.removed == pytest.approx(1.26, abs=0.05)
+
+
+def test_silence_keeps_a_gap_that_is_not_actually_silent(cfg):
+    """The check that carries the whole feature. A pause with music, a crowd or
+    an explosion under it is not dead air - and on reaction content that is most
+    of them. Cutting on the transcript alone would delete the payoff."""
+    times, energy = quiet(0.9)
+    tm = plan_cuts(a_gap_clip(), times, energy, 8.0, 16.0, cfg, 30.0)
+    assert tm.is_identity
+
+
+def test_silence_respects_the_off_switch(cfg):
+    cfg["silence"]["enabled"] = False
+    times, energy = quiet(0.1)
+    assert plan_cuts(a_gap_clip(), times, energy, 8.0, 16.0, cfg, 30.0).is_identity
+
+
+def test_silence_ignores_a_gap_that_is_too_short(cfg):
+    times, energy = quiet(0.1)
+    segs = spoken((10.0, 10.5, "one"), (11.0, 11.5, "two"))   # 0.5 s < min_gap
+    assert plan_cuts(segs, times, energy, 8.0, 16.0, cfg, 30.0).is_identity
+
+
+def test_silence_never_moves_the_clip_edges(cfg):
+    """Start and end were snapped onto shot boundaries on purpose. This stage is
+    not allowed to undo that, so it only ever cuts between words."""
+    times, energy = quiet(0.1)
+    tm = plan_cuts(a_gap_clip(), times, energy, 8.0, 16.0, cfg, 30.0)
+    assert tm.keep[0][0] == 0.0
+    assert tm.keep[-1][1] == pytest.approx(8.0, abs=1 / 30)
+
+
+def test_silence_snaps_every_interval_onto_the_frame_grid(cfg):
+    """Video keeps whole frames and audio keeps whole sample blocks. If an
+    interval is not a whole number of frames the two round it differently, and
+    the error accumulates over every further cut into audible A/V drift."""
+    times, energy = quiet(0.1)
+    segs = spoken((10.0, 10.5, "a"), (12.0, 12.5, "b"), (14.3, 14.9, "c"))
+    tm = plan_cuts(segs, times, energy, 8.0, 17.0, cfg, 30.0)
+    assert tm.cuts >= 2
+    for a, b in tm.keep:
+        assert (b - a) * 30 == pytest.approx(round((b - a) * 30), abs=1e-6)
+
+
+def test_silence_with_no_transcript_changes_nothing(cfg):
+    """Music-only or purely visual stretches have no word gaps to measure."""
+    times, energy = quiet(0.1)
+    assert plan_cuts([], times, energy, 8.0, 16.0, cfg, 30.0).is_identity
+
+
+def test_silence_without_an_energy_curve_changes_nothing(cfg):
+    """A source with no audio track leaves nothing to judge a gap by, and an
+    unknown has to fall on the side of keeping material."""
+    tm = plan_cuts(a_gap_clip(), np.zeros(0), np.zeros(0), 8.0, 16.0, cfg, 30.0)
+    assert tm.is_identity
+
+
+# --- Time mapping -----------------------------------------------------------
+
+def test_timemap_maps_across_a_removed_gap():
+    tm = TimeMap(keep=[(0.0, 2.0), (4.0, 6.0)], source_duration=6.0)
+    assert tm.duration == 4.0
+    assert tm.removed == 2.0
+    assert tm.to_output(1.0) == 1.0        # before the cut, unchanged
+    assert tm.to_output(4.5) == 2.5        # after it, pulled forward
+    assert tm.to_output(3.0) == 2.0        # inside it, collapsed onto the seam
+
+
+def test_timemap_identity_reports_itself_as_one():
+    assert TimeMap(keep=[(0.0, 9.0)], source_duration=9.0).is_identity
+
+
+def test_select_expr_never_compares_against_a_frame_position():
+    """The bounds sit on frame positions and `between` is inclusive at both
+    ends, so comparing against them leaves it to floating point whether the edge
+    frame survives - and video and audio decided differently often enough to
+    accumulate 100 ms of drift over 13 cuts. Half-frame offsets are positions no
+    frame ever occupies."""
+    tm = TimeMap(keep=[(0.0, 2.0), (4.0, 6.0)], source_duration=6.0)
+    expr = _select_expr(tm, 30.0)
+    half = 0.5 / 30.0
+    assert expr == (
+        f"between(t,{-half:.4f},{2.0 - half:.4f})"
+        f"+between(t,{4.0 - half:.4f},{6.0 - half:.4f})"
+    )
+
+
+# --- Render arguments -------------------------------------------------------
+
+def a_plan_with(timing: TimeMap | None) -> ClipPlan:
+    return ClipPlan(
+        index=1,
+        candidate=Candidate(start=10.0, end=30.0, title="clip"),
+        crops=[CropKeyframe(t=0.0, x=100, y=0, w=608, h=1080)],
+        timing=timing,
+    )
+
+
+def test_render_leaves_the_chain_alone_without_cuts(cfg):
+    plan = a_plan_with(TimeMap(keep=[(0.0, 20.0)], source_duration=20.0))
+    joined = " ".join(_ffmpeg_args(Path("s.mp4"), plan, Path("o.mp4"), cfg, "libx264")[0])
+    assert "select=" not in joined
+
+
+def test_render_cuts_video_and_audio_on_the_same_grid(cfg):
+    """Both sides have to be pinned to the same frame grid, or the cuts land on
+    different instants and the clip drifts apart."""
+    tm = TimeMap(keep=[(0.0, 5.0), (7.0, 20.0)], source_duration=20.0)
+    args, _ = _ffmpeg_args(Path("s.mp4"), a_plan_with(tm), Path("o.mp4"), cfg, "libx264")
+    video = args[args.index("-vf") + 1]
+    audio = args[args.index("-af") + 1]
+
+    expr = _select_expr(tm, float(cfg["render"]["fps"]))
+    assert f"select='{expr}'" in video
+    assert f"aselect='{expr}'" in audio
+    # fps before select: the grid has to exist before anything is selected off it.
+    assert video.index("fps=") < video.index("select=")
+    samples = round(cfg["render"]["audio_rate"] / cfg["render"]["fps"])
+    assert f"asetnsamples=n={samples}" in audio
+    assert "loudnorm" in audio
+
+
+# --- Render fingerprint -----------------------------------------------------
+
+def test_fingerprint_is_stable_for_the_same_config(cfg):
+    assert fingerprint(cfg) == fingerprint(load_config())
+
+
+def test_fingerprint_notices_a_different_output_format(cfg):
+    """The filename carries index, score and title - nothing about the format.
+    Without this hash `build --aspect 4:5` would report success and hand back
+    the 9:16 files from the previous run."""
+    other = load_config()
+    other["reframe"].update(target_width=1080, target_height=1350)
+    assert fingerprint(cfg) != fingerprint(other)
+
+
+@pytest.mark.parametrize(
+    ("section", "change"),
+    [
+        ("captions", {"enabled": False}),
+        ("silence", {"enabled": False}),
+        ("render", {"crf": 28}),
+    ],
+)
+def test_fingerprint_notices_render_relevant_changes(cfg, section, change):
+    other = load_config()
+    other[section].update(change)
+    assert fingerprint(cfg) != fingerprint(other)
+
+
+def test_fingerprint_ignores_what_cannot_change_a_rendered_file(cfg):
+    """Selection and transcription happen upstream of the encoder. They decide
+    which clips exist, not what an existing file looks like."""
+    other = load_config()
+    other["select"]["min_score"] = 99
+    other["transcribe"]["model"] = "tiny"
+    assert fingerprint(cfg) == fingerprint(other)
+
+
+# --- Captions on a compressed timeline --------------------------------------
+
+def test_captions_follow_the_cuts(cfg, tmp_path):
+    """Caption times are mapped before anything else runs, so a word after a cut
+    appears when it is actually heard - not where it sat in the source."""
+    cfg["captions"]["hook"]["enabled"] = False
+    segs = spoken((104.5, 104.9, "later"))
+    tm = TimeMap(keep=[(0.0, 2.0), (4.0, 6.0)], source_duration=6.0)
+
+    with_cut = build_ass(segs, 100.0, 106.0, tmp_path / "a.ass", cfg, timing=tm)
+    without = build_ass(segs, 100.0, 106.0, tmp_path / "b.ass", cfg)
+
+    assert "0:00:02.50" in with_cut.read_text(encoding="utf-8")
+    assert "0:00:04.50" in without.read_text(encoding="utf-8")

@@ -75,6 +75,49 @@ class CropKeyframe(BaseModel):
     h: int
 
 
+class TimeMap(BaseModel):
+    """Which parts of a clip survive dead-air removal, in clip-local seconds.
+
+    An identity map - one interval covering the whole clip - is the normal case
+    and means the renderer can leave its filter chain alone.
+    """
+
+    keep: list[tuple[float, float]]
+    source_duration: float
+
+    @property
+    def duration(self) -> float:
+        """Length of the finished clip, once the gaps are gone."""
+        return sum(b - a for a, b in self.keep)
+
+    @property
+    def removed(self) -> float:
+        return self.source_duration - self.duration
+
+    @property
+    def cuts(self) -> int:
+        return max(0, len(self.keep) - 1)
+
+    @property
+    def is_identity(self) -> bool:
+        return self.cuts == 0
+
+    def to_output(self, t: float) -> float:
+        """Map a clip-local source time onto the compressed timeline.
+
+        A time inside a removed gap collapses onto the end of the preceding kept
+        interval - which is exactly where it lands once the gap is gone.
+        """
+        elapsed = 0.0
+        for a, b in self.keep:
+            if t < a:
+                return elapsed
+            if t <= b:
+                return elapsed + (t - a)
+            elapsed += b - a
+        return elapsed
+
+
 class ClipPlan(BaseModel):
     """Everything the renderer needs for one clip."""
 
@@ -83,3 +126,4 @@ class ClipPlan(BaseModel):
     crops: list[CropKeyframe]
     ass_path: str | None = None
     out_path: str | None = None
+    timing: TimeMap | None = None

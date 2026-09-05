@@ -20,11 +20,12 @@ from .models import ClipPlan
 from .pipeline import run_pipeline
 from .utils.cache import read_json
 
-# The Windows console defaults to cp1252 and raises UnicodeEncodeError on any
-# emoji. TikTok captions are basically always text plus emoji, so output is
-# forced to UTF-8. 'replace' means an old console shows replacement characters
-# at worst instead of crashing.
-for _stream in (sys.stdout, sys.stderr):
+# The Windows console defaults to cp1252 and raises on any emoji. TikTok
+# captions are basically always text plus emoji, so all three streams are forced
+# to UTF-8. stdin belongs in here as much as the output ones: `clipper select
+# <id> --from -` reads a JSON body full of captions, and on a cp1252 console
+# that decode fails before the pipeline sees a single clip.
+for _stream in (sys.stdin, sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, ValueError):
@@ -61,22 +62,33 @@ def _overrides(**kwargs: Any) -> dict:
 
 
 def _print_table(plans: list[ClipPlan]) -> None:
+    # The trimmed column only appears when something was actually cut - on a run
+    # with dead-air removal off it would be a column of zeros.
+    trimmed = any(p.timing is not None and not p.timing.is_identity for p in plans)
+
     table = Table(title="Finished clips", show_lines=False)
     table.add_column("#", justify="right", style="cyan")
     table.add_column("Score", justify="right")
     table.add_column("Length", justify="right")
+    if trimmed:
+        table.add_column("Cut", justify="right", style="dim")
     table.add_column("Hook")
     table.add_column("File", style="dim")
 
     for plan in plans:
         cand = plan.candidate
-        table.add_row(
-            str(plan.index),
-            f"{cand.score:.0f}",
-            f"{cand.duration:.0f}s",
+        # The length that matters is the one the viewer sees, not the source
+        # window it was taken from.
+        length = plan.timing.duration if plan.timing else cand.duration
+        row = [str(plan.index), f"{cand.score:.0f}", f"{length:.0f}s"]
+        if trimmed:
+            cut = plan.timing.removed if plan.timing else 0.0
+            row.append(f"-{cut:.1f}s" if cut > 0.05 else "-")
+        row += [
             cand.hook[:44] or cand.title[:44],
             Path(plan.out_path).name if plan.out_path else "-",
-        )
+        ]
+        table.add_row(*row)
     console.print(table)
     if plans and plans[0].out_path:
         console.print(f"\nOutput: [bold]{Path(plans[0].out_path).parent}[/bold]")
@@ -97,6 +109,9 @@ def run(
         None, "--aspect", help=f"Output format: {' | '.join(ASPECT_PRESETS)}"
     ),
     no_captions: bool = typer.Option(False, "--no-captions", help="Without captions"),
+    no_silence: bool = typer.Option(
+        False, "--no-silence", help="Keep speech pauses instead of cutting them out"
+    ),
     no_llm: bool = typer.Option(
         False, "--no-llm", help="Heuristic selection instead of Claude (no API key needed)"
     ),
@@ -112,7 +127,9 @@ def run(
         language=language, whisper_model=whisper_model, vision_frames=vision_frames,
     )
     if no_captions:
-        overrides["captions"] = {"enabled": False}
+        _merge(overrides, {"captions": {"enabled": False}})
+    if no_silence:
+        _merge(overrides, {"silence": {"enabled": False}})
     if aspect:
         _merge(overrides, aspect_override(aspect))
     cfg = load_config(config, overrides)
@@ -127,12 +144,17 @@ def run(
         )
         use_llm = False
 
-    plans = run_pipeline(url, cfg, force=force, use_llm=use_llm, reselect=reselect)
+    result = run_pipeline(url, cfg, force=force, use_llm=use_llm, reselect=reselect)
 
-    if not plans:
+    if not result.plans:
         raise typer.Exit(code=1)
 
-    _print_table(plans)
+    _print_table(result.plans)
+    if not result.ok:
+        # Exit non-zero even though clips were produced. A partial run that
+        # reports success is how you end up uploading 29 of 34 clips and never
+        # noticing the other five.
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -255,6 +277,9 @@ def build(
         None, "--aspect", help=f"Output format: {' | '.join(ASPECT_PRESETS)}"
     ),
     no_captions: bool = typer.Option(False, "--no-captions", help="Without captions"),
+    no_silence: bool = typer.Option(
+        False, "--no-silence", help="Keep speech pauses instead of cutting them out"
+    ),
     force: bool = typer.Option(
         False, "--force", help="Re-render clips that already exist"
     ),
@@ -262,20 +287,28 @@ def build(
 ) -> None:
     """Render the clips from the stored selection.
 
-    Clips that already exist on disk are reused unless --force is given.
+    Clips that already exist on disk are reused - but only the ones that were
+    rendered with the same output settings. Change the aspect ratio, the
+    captions or the encoder and they are rebuilt without being asked.
     """
-    overrides: dict = {"captions": {"enabled": False}} if no_captions else {}
+    overrides: dict = {}
+    if no_captions:
+        _merge(overrides, {"captions": {"enabled": False}})
+    if no_silence:
+        _merge(overrides, {"silence": {"enabled": False}})
     if aspect:
         _merge(overrides, aspect_override(aspect))
     cfg = load_config(config, overrides or None)
 
     analysis = pipeline.load_analysis(video_id, cfg)
     candidates = pipeline.load_candidates(video_id)
-    plans = pipeline.build(analysis, candidates, cfg, force=force)
+    result = pipeline.build(analysis, candidates, cfg, force=force)
 
-    if not plans:
+    if not result.plans:
         raise typer.Exit(code=1)
-    _print_table(plans)
+    _print_table(result.plans)
+    if not result.ok:
+        raise typer.Exit(code=1)
 
 
 @app.command("list")
@@ -296,9 +329,12 @@ def list_clips(
         data = read_json(manifest)
         console.print(f"\n[bold]{data['source']['title']}[/bold] [dim]{directory.name}[/dim]")
         for clip in data["clips"]:
+            length = clip.get("output_duration", clip["duration"])
+            cut = clip["duration"] - length
+            note = f" [dim](-{cut:.0f}s)[/dim]" if cut > 0.5 else ""
             console.print(
                 f"  [cyan]{clip['index']:>2}[/cyan] "
-                f"[{clip['score']:>3.0f}] {clip['duration']:>4.0f}s  {clip['hook']}"
+                f"[{clip['score']:>3.0f}] {length:>4.0f}s{note}  {clip['hook']}"
             )
             if clip.get("caption"):
                 console.print(f"      [dim]{clip['caption']}[/dim]")

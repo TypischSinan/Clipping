@@ -18,6 +18,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 from rich.console import Console
@@ -25,7 +26,17 @@ from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, T
 
 from .config import OUT_DIR, WORK_DIR
 from .models import Candidate, ClipPlan, EnergyPeak, Segment, Shot, SourceVideo
-from .stages import audio, captions, ingest, reframe, render, scenes, select, transcribe
+from .stages import (
+    audio,
+    captions,
+    ingest,
+    reframe,
+    render,
+    scenes,
+    select,
+    silence,
+    transcribe,
+)
 from .utils.cache import read_json, write_json
 from .utils.ffmpeg import ensure_ffmpeg
 
@@ -50,6 +61,23 @@ def _progress() -> Progress:
         console=console,
         transient=True,
     )
+
+
+class BuildResult(NamedTuple):
+    """Outcome of a render pass.
+
+    `failed` is carried out separately rather than just being missing from
+    `plans`: a clip that throws is logged and the remaining ones still render,
+    but the caller has to be able to tell a partial run from a complete one -
+    otherwise a build that lost five of thirty-four clips still exits zero.
+    """
+
+    plans: list[ClipPlan]
+    failed: list[tuple[int, str]]
+
+    @property
+    def ok(self) -> bool:
+        return not self.failed
 
 
 @dataclass
@@ -286,13 +314,37 @@ def load_candidates(video_id: str) -> list[Candidate]:
 # Stages 6-8
 # --------------------------------------------------------------------------
 
+def _previous_build(out_dir: Path, fingerprint: str) -> dict[str, tuple[float, float]]:
+    """Which files on disk were produced by the config we are about to use.
+
+    Returns filename -> (start, end). Empty when there is no manifest or it was
+    written by a different render config, which makes every clip stale. The
+    filename alone cannot answer this: it carries index, score and title, and
+    nothing about format, captions or encoder.
+    """
+    manifest = out_dir / "clips.json"
+    if not manifest.exists():
+        return {}
+    try:
+        data = read_json(manifest)
+    except (OSError, ValueError):
+        return {}
+    if data.get("render", {}).get("fingerprint") != fingerprint:
+        return {}
+    return {
+        clip["file"]: (clip["start"], clip["end"])
+        for clip in data.get("clips", [])
+        if clip.get("file")
+    }
+
+
 def build(
     analysis: Analysis,
     candidates: list[Candidate],
     cfg: dict,
     *,
     force: bool = False,
-) -> list[ClipPlan]:
+) -> BuildResult:
     ensure_ffmpeg()
     source = analysis.source
     source_path = Path(source.path)
@@ -308,6 +360,16 @@ def build(
     def make_clip(i: int, cand: Candidate) -> ClipPlan:
         crops = reframe.analyze(source_path, cand.start, cand.end, analysis.shots, cfg)
 
+        timing = silence.plan_cuts(
+            analysis.segments,
+            analysis.times,
+            analysis.energy,
+            cand.start,
+            cand.end,
+            cfg,
+            float(cfg["render"]["fps"]),
+        )
+
         ass_path = None
         if cfg["captions"]["enabled"]:
             ass_path = captions.build_ass(
@@ -317,6 +379,7 @@ def build(
                 work / "subs" / f"clip_{i:03d}.ass",
                 cfg,
                 hook=cand.hook,
+                timing=timing,
             )
 
         plan = ClipPlan(
@@ -324,6 +387,7 @@ def build(
             candidate=cand,
             crops=crops,
             ass_path=str(ass_path) if ass_path else None,
+            timing=timing,
         )
         out_path = out_path_for(i, cand)
         render.render_clip(source_path, plan, out_path, cfg)
@@ -336,12 +400,26 @@ def build(
             index=i, candidate=cand, crops=[], out_path=str(out_path_for(i, cand))
         )
 
-    # Reuse what is already rendered. Tweaking one caption parameter otherwise
-    # costs a full pass over every clip, and the analysis is cached anyway.
+    # Reuse what is already rendered, but only what the *current* config would
+    # produce. Re-rendering everything because one caption parameter moved is
+    # wasteful; handing back a 9:16 file for a 4:5 build is wrong, and wrong
+    # beats slow.
+    fingerprint = render.fingerprint(cfg)
+    previous = {} if force else _previous_build(out_dir, fingerprint)
+
     todo: list[tuple[int, Candidate]] = []
     plans: list[ClipPlan] = []
     for i, cand in enumerate(candidates, start=1):
-        if not force and out_path_for(i, cand).exists():
+        path = out_path_for(i, cand)
+        known = previous.get(path.name)
+        # The boundaries are compared too: a re-selection can move a clip while
+        # its title and score - and therefore its filename - stay identical.
+        unchanged = (
+            known is not None
+            and abs(known[0] - cand.start) < 0.01
+            and abs(known[1] - cand.end) < 0.01
+        )
+        if unchanged and path.exists():
             plans.append(reuse(i, cand))
         else:
             todo.append((i, cand))
@@ -349,8 +427,9 @@ def build(
     if plans:
         _step(f"{len(plans)} clips already rendered, skipping (--force to redo)")
     if not todo:
-        _write_manifest(out_dir, source, sorted(plans, key=lambda p: p.index))
-        return sorted(plans, key=lambda p: p.index)
+        ordered = sorted(plans, key=lambda p: p.index)
+        _write_manifest(out_dir, source, ordered, cfg, fingerprint)
+        return BuildResult(ordered, [])
 
     # Parallel because both expensive steps release the GIL: OpenCV decodes in
     # C, ffmpeg runs as its own process. Without NVENC, libx264 on the CPU is
@@ -358,6 +437,7 @@ def build(
     workers = max(1, int(cfg["render"].get("workers", 4)))
     _step(f"Rendering {len(todo)} clips ({workers} in parallel)")
 
+    failed: list[tuple[int, str]] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(make_clip, i, cand): (i, cand) for i, cand in todo}
         for future in as_completed(futures):
@@ -365,19 +445,34 @@ def build(
             try:
                 plan = future.result()
             except Exception as exc:
-                # One broken clip must not take the rest down with it.
+                # One broken clip must not take the rest down with it - but it
+                # must not vanish either, so it is collected for the exit code.
                 console.print(f"  [red]x[/red] Clip {i} ({cand.title}): {exc}")
+                failed.append((i, f"{cand.title}: {exc}"))
                 continue
             plans.append(plan)
+            trimmed = ""
+            if plan.timing is not None and not plan.timing.is_identity:
+                trimmed = (
+                    f", -{plan.timing.removed:.1f}s dead air "
+                    f"in {plan.timing.cuts} cuts"
+                )
             console.print(
                 f"  [green]->[/green] {Path(plan.out_path).name} "
-                f"[dim]({cand.start:.0f}-{cand.end:.0f}s, Score {cand.score:.0f})[/dim]"
+                f"[dim]({cand.start:.0f}-{cand.end:.0f}s, "
+                f"Score {cand.score:.0f}{trimmed})[/dim]"
             )
 
     plans.sort(key=lambda p: p.index)
+    failed.sort()
 
-    _write_manifest(out_dir, source, plans)
-    return plans
+    if failed:
+        console.print(
+            f"[red]{len(failed)} of {len(todo)} clips failed to render.[/red]"
+        )
+
+    _write_manifest(out_dir, source, plans, cfg, fingerprint)
+    return BuildResult(plans, failed)
 
 
 # --------------------------------------------------------------------------
@@ -391,7 +486,7 @@ def run_pipeline(
     force: bool = False,
     use_llm: bool = True,
     reselect: bool = False,
-) -> list[ClipPlan]:
+) -> BuildResult:
     analysis = analyze(url, cfg, force=force)
     work = analysis.work
 
@@ -428,25 +523,51 @@ def run_pipeline(
 
     if not cands:
         console.print("[yellow]No clips found.[/yellow]")
-        return []
+        return BuildResult([], [])
     console.print(f"  [dim]{len(cands)} clips selected[/dim]")
 
     return build(analysis, cands, cfg, force=force)
 
 
-def _write_manifest(out_dir: Path, source: SourceVideo, plans: list[ClipPlan]) -> None:
-    """Sidecar with hooks and captions - what you need when uploading."""
+def _write_manifest(
+    out_dir: Path,
+    source: SourceVideo,
+    plans: list[ClipPlan],
+    cfg: dict,
+    fingerprint: str,
+) -> None:
+    """Sidecar with hooks and captions - what you need when uploading.
+
+    It doubles as the record of what the files on disk actually are: the next
+    build reads the fingerprint back to decide whether they still match the
+    config it was asked for.
+    """
+    rf = cfg["reframe"]
     write_json(
         out_dir / "clips.json",
         {
             "source": source.model_dump(),
+            "render": {
+                "fingerprint": fingerprint,
+                "width": rf["target_width"],
+                "height": rf["target_height"],
+                "fps": cfg["render"]["fps"],
+                "captions": bool(cfg["captions"]["enabled"]),
+                "silence": bool((cfg.get("silence") or {}).get("enabled", False)),
+            },
             "clips": [
                 {
                     "index": p.index,
                     "file": Path(p.out_path).name if p.out_path else None,
                     "start": p.candidate.start,
                     "end": p.candidate.end,
+                    # `duration` is the source window; `output_duration` is what
+                    # the viewer gets, which is shorter wherever dead air was cut.
                     "duration": round(p.candidate.duration, 2),
+                    "output_duration": round(
+                        p.timing.duration if p.timing else p.candidate.duration, 2
+                    ),
+                    "cuts": p.timing.cuts if p.timing else 0,
                     "score": p.candidate.score,
                     "title": p.candidate.title,
                     "hook": p.candidate.hook,

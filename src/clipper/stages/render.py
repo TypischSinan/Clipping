@@ -6,11 +6,31 @@ loudness, encode.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from pathlib import Path
 
-from ..models import ClipPlan
+from ..models import ClipPlan, TimeMap
 from ..utils.ffmpeg import has_audio, pick_encoder, run
+
+# Config sections that change what a rendered file looks like. Everything else -
+# which clips were picked, how the transcript was produced - is upstream of the
+# encoder and cannot make an existing file wrong.
+RENDER_SECTIONS = ("reframe", "captions", "render", "silence")
+
+
+def fingerprint(cfg: dict) -> str:
+    """Short hash over the config a rendered clip depends on.
+
+    `build` reuses clips that are already on disk, and the filename carries only
+    index, score and title - nothing about the format. Without this hash
+    `build --aspect 4:5` would report success while handing back the 9:16 files
+    from the previous run.
+    """
+    subset = {name: cfg.get(name) for name in RENDER_SECTIONS}
+    canonical = json.dumps(subset, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:12]
 
 
 def _crop_x_expr(plan: ClipPlan) -> str:
@@ -27,6 +47,24 @@ def _crop_x_expr(plan: ClipPlan) -> str:
     for i in range(len(crops) - 2, -1, -1):
         expr = f"if(lt(t,{crops[i + 1].t:.3f}),{crops[i].x},{expr})"
     return expr
+
+
+def _select_expr(timing: TimeMap, fps: float) -> str:
+    """Turn the kept intervals into a select/aselect expression.
+
+    Both bounds are pulled back by half a frame. The interval edges sit exactly
+    on frame positions, and `between` is inclusive at both ends, so comparing
+    against them leaves it to floating-point rounding whether the edge frame is
+    kept - independently for video and for audio. That is not a rounding
+    curiosity: measured over 13 cuts the two sides disagreed often enough to
+    accumulate 100 ms of A/V drift. Half-frame offsets are positions no frame
+    and no audio block ever occupies, so each interval keeps exactly
+    (b - a) * fps frames, on both sides, whatever the arithmetic does.
+    """
+    half = 0.5 / fps
+    return "+".join(
+        f"between(t,{a - half:.4f},{b - half:.4f})" for a, b in timing.keep
+    )
 
 
 # Deliberately no path escaping: the subtitles filter reads the colon of a
@@ -59,11 +97,25 @@ def _ffmpeg_args(
 
     cand = plan.candidate
     base = plan.crops[0]
+    timing = plan.timing
+    cutting = timing is not None and not timing.is_identity
 
+    # Order matters. `crop` reads the source timestamps, so it has to run before
+    # anything renumbers them. `fps` comes next and forces a fixed grid, which is
+    # what lets the select expression below cut on exactly the same instants as
+    # the audio does. Scaling last means only the surviving frames get resized.
     filters = [
         f"crop=w={base.w}:h={base.h}:x='{_crop_x_expr(plan)}':y={base.y}",
-        f"scale={rf['target_width']}:{rf['target_height']}:flags=lanczos",
         f"fps={rc['fps']}",
+    ]
+    if cutting:
+        filters += [
+            f"select='{_select_expr(timing, float(rc['fps']))}'",
+            # Renumber from zero so the gaps actually close instead of freezing.
+            "setpts=N/FRAME_RATE/TB",
+        ]
+    filters += [
+        f"scale={rf['target_width']}:{rf['target_height']}:flags=lanczos",
         "setsar=1",
     ]
     subtitle_cwd: Path | None = None
@@ -81,9 +133,31 @@ def _ffmpeg_args(
         "-vf", ",".join(filters),
     ]
 
+    afilters: list[str] = []
+    if with_audio and cutting:
+        # One audio block per video frame. Left alone, `aselect` keeps whole
+        # decoder frames of ~21 ms while `select` keeps whole video frames of
+        # ~33 ms, so the two have no common grid to cut on at all. This is the
+        # first half of keeping them together; the second is the half-frame
+        # offset in _select_expr, and the drift measured at 100 ms over 13 cuts
+        # only disappeared once both were in place.
+        samples = max(1, round(rc["audio_rate"] / rc["fps"]))
+        afilters += [
+            f"aresample={rc['audio_rate']}",
+            # Start the audio grid at zero, where the regenerated video frames
+            # already start. On the material measured here the first packet was
+            # close enough to zero that this changed nothing, but it costs
+            # nothing and removes the dependency on that being true.
+            "asetpts=PTS-STARTPTS",
+            f"asetnsamples=n={samples}:p=0",
+            f"aselect='{_select_expr(timing, float(rc['fps']))}'",
+            "asetpts=N/SR/TB",
+        ]
     if with_audio and rc["loudnorm"]:
         # -14 LUFS is the target TikTok normalises to anyway.
-        args += ["-af", "loudnorm=I=-14:TP=-1.5:LRA=11"]
+        afilters.append("loudnorm=I=-14:TP=-1.5:LRA=11")
+    if afilters:
+        args += ["-af", ",".join(afilters)]
 
     if encoder.endswith("_nvenc"):
         args += [

@@ -86,8 +86,22 @@ def download(url: str, work_dir: Path, cfg: dict, force: bool = False) -> Source
     sections = cfg["ingest"].get("download_sections")
 
     # Fetch metadata first so the work directory can be named after video_id.
-    with YoutubeDL({"quiet": True, "no_warnings": True, "skip_download": True}) as ydl:
+    # `noplaylist` matters here: a link copied out of a playlist or a mix carries
+    # `&list=`, and without the flag yt-dlp resolves the playlist instead of the
+    # video - the id becomes the playlist id and every entry gets downloaded over
+    # the same `source.%(ext)s`.
+    with YoutubeDL(
+        {"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True}
+    ) as ydl:
         info = ydl.extract_info(url, download=False)
+
+    # A playlist URL with no resolvable single video still comes back as a
+    # playlist dict. Say so instead of failing later on a missing "id".
+    if info.get("_type") in {"playlist", "multi_video"}:
+        entries = [e for e in (info.get("entries") or []) if e]
+        if not entries:
+            raise RuntimeError(f"'{url}' resolves to an empty playlist.")
+        info = entries[0]
 
     video_id = info["id"]
     target_dir = work_dir / video_id
@@ -110,6 +124,7 @@ def download(url: str, work_dir: Path, cfg: dict, force: bool = False) -> Source
             "quiet": True,
             "no_warnings": True,
             "noprogress": True,
+            "noplaylist": True,
         }
         if sections:
             # download_range_func(chapters, ranges) - ranges are (start, end)

@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from ..models import Segment, Word
+from ..models import Segment, TimeMap, Word
 
 # Punctuation stripped from the end of a word. A mid-sentence comma is kept on
 # purpose; only what stops being a reading aid at the end of a line is removed.
@@ -176,8 +176,16 @@ def build_ass(
     out_path: Path,
     cfg: dict,
     hook: str = "",
+    timing: TimeMap | None = None,
 ) -> Path:
-    """Build an ASS file for the window [start, end), with times starting at 0."""
+    """Build an ASS file for the window [start, end), with times starting at 0.
+
+    `timing` carries the dead-air cuts. Every caption time is mapped onto the
+    compressed timeline before anything else happens, so the rest of this module
+    only ever deals with the timeline the viewer actually sees - including the
+    `max_gap` block break, which then correctly stops firing on a pause that has
+    been cut out.
+    """
     cp = cfg["captions"]
     strip = cp.get("strip_punctuation", True)
 
@@ -199,12 +207,27 @@ def build_ass(
                 )
             )
 
+    span = end - start
+    if timing is not None and not timing.is_identity:
+        span = timing.duration
+        remapped: list[Word] = []
+        for word in words:
+            w_start = timing.to_output(word.start)
+            w_end = timing.to_output(word.end)
+            # A word whose whole span collapsed sits inside a removed gap. That
+            # should not happen - gaps are cut between words - but a padded edge
+            # can clip one, and a zero-length event would render as a flicker.
+            if w_end - w_start < 0.02:
+                continue
+            remapped.append(Word(start=w_start, end=w_end, text=word.text))
+        words = remapped
+
     out: list[str] = [_header(cfg)]
 
     # --- Hook overlay ------------------------------------------------------
     hk = cp.get("hook", {})
     if hook and hk.get("enabled", True):
-        duration = min(float(hk.get("duration", 2.0)), end - start)
+        duration = min(float(hk.get("duration", 2.0)), span)
         body = _wrap(
             _escape(hook.upper() if hk.get("uppercase", True) else hook),
             hk.get("max_chars_per_line", 18),
