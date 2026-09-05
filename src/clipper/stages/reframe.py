@@ -75,7 +75,7 @@ class SubjectLocator:
             return []
         out = []
         for det in dets:
-            x, y, w, h = det[0], det[1], det[2], det[3]
+            x, w, h = det[0], det[2], det[3]
             score = float(det[14]) if len(det) > 14 else 1.0
             cx = (x + w / 2.0) / self.frame_w
             # Larger faces are closer to the camera and therefore more important.

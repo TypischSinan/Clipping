@@ -204,8 +204,6 @@ def select_with_llm(
 def select_heuristic(
     segments: list[Segment],
     shots: list[Shot],
-    times: np.ndarray,
-    energy: np.ndarray,
     peaks: list[EnergyPeak],
     cfg: dict,
 ) -> list[Candidate]:

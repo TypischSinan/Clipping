@@ -365,8 +365,7 @@ def run_pipeline(
         else:
             _step("Selecting clips (heuristic, no LLM)")
             cands = select.select_heuristic(
-                analysis.segments, analysis.shots, analysis.times,
-                analysis.energy, analysis.peaks, cfg,
+                analysis.segments, analysis.shots, analysis.peaks, cfg
             )
         write_json(candidates_path, [c.model_dump() for c in cands])
 

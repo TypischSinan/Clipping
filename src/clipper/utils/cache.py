@@ -1,26 +1,14 @@
-"""Stage caching: each stage writes its result as JSON and skips itself when the
-file already exists. Saves the expensive Whisper pass on re-runs."""
+"""JSON helpers for the stage cache.
+
+Each stage writes its result next to the source video and skips itself when the
+file already exists, which saves the expensive Whisper pass on re-runs.
+"""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Callable, TypeVar
-
-T = TypeVar("T")
-
-
-def cached_json(path: Path, force: bool, produce: Callable[[], Any]) -> Any:
-    """Return parsed JSON from `path`, or call `produce` and write the result."""
-    if path.exists() and not force:
-        with path.open("r", encoding="utf-8") as fh:
-            return json.load(fh)
-
-    result = produce()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as fh:
-        json.dump(result, fh, ensure_ascii=False, indent=2)
-    return result
+from typing import Any
 
 
 def write_json(path: Path, data: Any) -> None:

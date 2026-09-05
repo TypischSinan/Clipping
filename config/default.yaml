@@ -45,16 +45,14 @@ reframe:
   target_height: 1920
   # Sampling rate for subject detection. 4 fps is enough and fast.
   sample_fps: 4.0
-  # The crop stays static per shot - looks better on fast cuts than a
-  # constantly panning crop and is much cheaper to render.
-  static_per_shot: true
   # Minimum size for a face before the crop follows it - frame area share times
   # detection score. Without this threshold the crop also follows people far in
   # the background and misses the actual scene. Measured: real subjects sit at a
   # median of 0.005, background below 0.001.
+  #
+  # The crop is always static within a shot. When no face clears the threshold,
+  # the fallback chain is: motion centroid -> previous shot's position -> centre.
   min_face_weight: 0.001
-  # When no subject is found: center | blur_pad
-  fallback: blur_pad
 
 captions:
   enabled: true

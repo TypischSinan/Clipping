@@ -14,7 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from clipper.config import load_config
-from clipper.models import Candidate, ClipPlan, CropKeyframe, Segment, Shot, Word
+from clipper.models import Candidate, ClipPlan, CropKeyframe, Shot, Word
 from clipper.stages.captions import _blocks, _render_block, _wrap
 from clipper.stages.render import _crop_x_expr
 from clipper.stages.scenes import snap_end_within, snap_to_shots
@@ -29,7 +29,7 @@ def cfg():
 def shots(*bounds: float) -> list[Shot]:
     return [
         Shot(index=i, start=a, end=b)
-        for i, (a, b) in enumerate(zip(bounds, bounds[1:]))
+        for i, (a, b) in enumerate(zip(bounds, bounds[1:], strict=False))
     ]
 
 
@@ -92,7 +92,7 @@ def test_finalize_output_is_never_overlapping(cfg):
         cfg,
     )
     assert out[0].title == "a" and out[0].start == 0.0
-    for first, second in zip(out, out[1:]):
+    for first, second in zip(out, out[1:], strict=False):
         assert first.end <= second.start
 
 
@@ -245,7 +245,7 @@ def test_max_words_wins_over_char_capacity(cfg):
     cfg["captions"].update(max_words=3, max_chars_per_line=99, max_lines=2, max_gap=99.0)
     blocks = _blocks(words_from("A B C D E F"), cfg)
     assert len(blocks) == 2
-    assert all(sum(len(l) for l in b) == 3 for b in blocks)
+    assert all(sum(len(line) for line in b) == 3 for b in blocks)
 
 
 def test_max_words_zero_disables_the_limit(cfg):
@@ -351,7 +351,7 @@ def test_finalize_fits_a_clip_into_the_remaining_gap(cfg):
         cfg,
     )
     assert "mitte" in [c.title for c in out]
-    for a, b in zip(out, out[1:]):
+    for a, b in zip(out, out[1:], strict=False):
         assert a.end <= b.start
 
 

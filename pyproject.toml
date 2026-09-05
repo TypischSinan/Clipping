@@ -21,6 +21,10 @@ cuda = [
     "nvidia-cublas-cu12",
     "nvidia-cudnn-cu12>=9.0",
 ]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
 
 [project.scripts]
 clipper = "clipper.cli:app"
@@ -31,3 +35,19 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/clipper"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# F: pyflakes (unused imports, dead locals), I: import order, UP: modern syntax,
+# ARG: unused arguments - genau die Klassen, die stille Karteileichen finden.
+select = ["E", "F", "I", "UP", "B", "ARG"]
+ignore = [
+    "E501",  # line length is the formatter's job, not the linter's
+    "B008",  # typer.Option() in a default is Typer's documented pattern
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

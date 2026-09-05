@@ -6,7 +6,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import typer
 from pydantic import ValidationError
@@ -77,12 +77,12 @@ def _print_table(plans: list[ClipPlan]) -> None:
 @app.command()
 def run(
     url: str = typer.Argument(..., help="YouTube URL"),
-    clips: Optional[int] = typer.Option(None, "--clips", "-n", help="Number of clips"),
-    min_duration: Optional[float] = typer.Option(None, "--min", help="Minimum length in seconds"),
-    max_duration: Optional[float] = typer.Option(None, "--max", help="Maximum length in seconds"),
-    language: Optional[str] = typer.Option(None, "--lang", help="Language, e.g. en or de"),
-    whisper_model: Optional[str] = typer.Option(None, "--whisper", help="Whisper model"),
-    vision_frames: Optional[int] = typer.Option(
+    clips: int | None = typer.Option(None, "--clips", "-n", help="Number of clips"),
+    min_duration: float | None = typer.Option(None, "--min", help="Minimum length in seconds"),
+    max_duration: float | None = typer.Option(None, "--max", help="Maximum length in seconds"),
+    language: str | None = typer.Option(None, "--lang", help="Language, e.g. en or de"),
+    whisper_model: str | None = typer.Option(None, "--whisper", help="Whisper model"),
+    vision_frames: int | None = typer.Option(
         None, "--vision", help="Keyframes sent to the model (0 = off)"
     ),
     no_captions: bool = typer.Option(False, "--no-captions", help="Without captions"),
@@ -93,7 +93,7 @@ def run(
         False, "--reselect", help="Recompute only the selection, keep the rest of the cache"
     ),
     force: bool = typer.Option(False, "--force", help="Discard all caches"),
-    config: Optional[Path] = typer.Option(None, "--config", "-c", help="Custom YAML config"),
+    config: Path | None = typer.Option(None, "--config", "-c", help="Custom YAML config"),
 ) -> None:
     """Process a video from URL to finished clips."""
     overrides = _overrides(
@@ -125,16 +125,16 @@ def run(
 @app.command()
 def analyze(
     url: str = typer.Argument(..., help="YouTube URL"),
-    clips: Optional[int] = typer.Option(None, "--clips", "-n", help="Number of clips"),
-    min_duration: Optional[float] = typer.Option(None, "--min", help="Minimum length in seconds"),
-    max_duration: Optional[float] = typer.Option(None, "--max", help="Maximum length in seconds"),
-    language: Optional[str] = typer.Option(None, "--lang", help="Language, e.g. en or de"),
-    whisper_model: Optional[str] = typer.Option(None, "--whisper", help="Whisper model"),
-    vision_frames: Optional[int] = typer.Option(
+    clips: int | None = typer.Option(None, "--clips", "-n", help="Number of clips"),
+    min_duration: float | None = typer.Option(None, "--min", help="Minimum length in seconds"),
+    max_duration: float | None = typer.Option(None, "--max", help="Maximum length in seconds"),
+    language: str | None = typer.Option(None, "--lang", help="Language, e.g. en or de"),
+    whisper_model: str | None = typer.Option(None, "--whisper", help="Whisper model"),
+    vision_frames: int | None = typer.Option(
         None, "--vision", help="Number of keyframes for the briefing"
     ),
     force: bool = typer.Option(False, "--force", help="Discard all caches"),
-    config: Optional[Path] = typer.Option(None, "--config", "-c", help="Custom YAML config"),
+    config: Path | None = typer.Option(None, "--config", "-c", help="Custom YAML config"),
 ) -> None:
     """Stages 1-4 plus keyframes. Writes a briefing for moment selection.
 
@@ -167,10 +167,10 @@ def select_cmd(
     from_file: str = typer.Option(
         ..., "--from", help="JSON file with the clips, or '-' for stdin"
     ),
-    config: Optional[Path] = typer.Option(None, "--config", "-c", help="Custom YAML config"),
-    clips: Optional[int] = typer.Option(None, "--clips", "-n", help="Number of clips"),
-    min_duration: Optional[float] = typer.Option(None, "--min"),
-    max_duration: Optional[float] = typer.Option(None, "--max"),
+    config: Path | None = typer.Option(None, "--config", "-c", help="Custom YAML config"),
+    clips: int | None = typer.Option(None, "--clips", "-n", help="Number of clips"),
+    min_duration: float | None = typer.Option(None, "--min"),
+    max_duration: float | None = typer.Option(None, "--max"),
 ) -> None:
     """Take finished clip proposals and clean them up.
 
@@ -185,8 +185,10 @@ def select_cmd(
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
+        # The message is already formatted for the user; a traceback would only
+        # add noise. `from None` says that explicitly.
         console.print(f"[red]Not valid JSON: {exc}[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     raw = payload.get("clips", payload) if isinstance(payload, dict) else payload
     if not isinstance(raw, list) or not raw:
@@ -198,7 +200,7 @@ def select_cmd(
         cleaned = pipeline.store_candidates(analysis, raw, cfg)
     except ValidationError as exc:
         console.print(f"[red]Clip does not match the schema:[/red]\n{exc}")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     console.print(f"[green]{len(cleaned)} clips accepted[/green]")
     for cand in cleaned:
@@ -218,7 +220,7 @@ def select_cmd(
         console.print(f"\n[yellow]{len(dropped)} dropped:[/yellow]")
         for item in dropped:
             score = item.get("score", 0)
-            why = ("score below %g" % min_score if score < min_score
+            why = (f"score below {min_score:g}" if score < min_score
                    else "overlap, or too short after snapping")
             console.print(
                 f"  [dim]{item.get('start', 0):7.2f}-{item.get('end', 0):7.2f} "
@@ -231,7 +233,7 @@ def select_cmd(
 def build(
     video_id: str = typer.Argument(..., help="Video ID from 'clipper analyze'"),
     no_captions: bool = typer.Option(False, "--no-captions", help="Without captions"),
-    config: Optional[Path] = typer.Option(None, "--config", "-c", help="Custom YAML config"),
+    config: Path | None = typer.Option(None, "--config", "-c", help="Custom YAML config"),
 ) -> None:
     """Render the clips from the stored selection."""
     overrides = {"captions": {"enabled": False}} if no_captions else None
@@ -248,7 +250,7 @@ def build(
 
 @app.command("list")
 def list_clips(
-    video_id: Optional[str] = typer.Argument(None, help="Video ID, or all if omitted"),
+    video_id: str | None = typer.Argument(None, help="Video ID, or all if omitted"),
 ) -> None:
     """Show already generated clips with their hook and caption."""
     dirs = [OUT_DIR / video_id] if video_id else sorted(

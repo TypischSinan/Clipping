@@ -302,7 +302,9 @@ what differs.
 | `target_width` / `target_height` | `1080` / `1920` | Output format |
 | `sample_fps` | `4.0` | Sampling rate for subject detection |
 | `min_face_weight` | `0.001` | Minimum face size (area × score) |
-| `static_per_shot` | `true` | Crop stays fixed within a shot |
+
+The crop is always static within a shot. When no face clears `min_face_weight`, the
+fallback chain is: motion centroid → previous shot's position → frame centre.
 
 ### `captions`
 
@@ -502,7 +504,9 @@ resolved to `(start, end)` in seconds beforehand.
 ## Tests
 
 ```bash
-python -m pytest tests/ -q
+uv sync --extra dev
+python -m pytest -q
+python -m ruff check src tests
 ```
 
 34 tests. The focus is on cut boundaries and caption layout — that's where a bug only

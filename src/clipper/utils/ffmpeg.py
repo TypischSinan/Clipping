@@ -79,8 +79,7 @@ def decode_audio_mono(path: Path, sample_rate: int = 16_000) -> np.ndarray:
             "-ac", "1", "-ar", str(sample_rate),
             "-",
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
     )
     if proc.returncode != 0:
         tail = proc.stderr.decode("utf-8", "replace").strip().splitlines()[-10:]
