@@ -716,6 +716,7 @@ src/clipper/
     cuda.py              CUDA DLL paths on Windows
     cache.py             JSON caching per stage
 config/default.yaml      Every parameter, with comments
+docs/make_demo.py        Rebuilds the demo GIF at the top of this file
 tests/test_pipeline.py   65 tests
 work/<video-id>/         Cache: source, transcript, shots, energy, keyframes
 out/<video-id>/          Finished clips + clips.json
