@@ -36,15 +36,25 @@ def _crop_x_expr(plan: ClipPlan) -> str:
 # no colon to escape in the first place.
 
 
-def render_clip(
+def _ffmpeg_args(
     source_path: Path,
     plan: ClipPlan,
     out_path: Path,
     cfg: dict,
-) -> Path:
+    encoder: str,
+) -> tuple[list[str], Path | None]:
+    """Build the single ffmpeg call for one clip.
+
+    Split out of render_clip so the argument list can be asserted in a test.
+    The audio rate in particular is invisible in the picture and shows up only
+    in the container metadata, which is exactly the kind of thing that stays
+    broken for a long time.
+
+    Returns the args plus the cwd ffmpeg has to run in - see the note above on
+    why the subtitles filter needs one.
+    """
     rc = cfg["render"]
     rf = cfg["reframe"]
-    encoder = pick_encoder(rc["encoder"])
 
     cand = plan.candidate
     base = plan.crops[0]
@@ -87,9 +97,25 @@ def render_clip(
     args += [
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", rc["audio_bitrate"],
+        # Pin the audio rate. loudnorm runs its internal chain at 192 kHz, and
+        # without an explicit rate the AAC encoder just clamps to its own
+        # maximum of 96 kHz - a rate no short-form platform expects, so every
+        # upload gets resampled again on their side.
+        "-ar", str(rc["audio_rate"]),
         "-movflags", "+faststart",
         str(out_path),
     ]
+    return args, subtitle_cwd
+
+
+def render_clip(
+    source_path: Path,
+    plan: ClipPlan,
+    out_path: Path,
+    cfg: dict,
+) -> Path:
+    encoder = pick_encoder(cfg["render"]["encoder"])
+    args, subtitle_cwd = _ffmpeg_args(source_path, plan, out_path, cfg, encoder)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     run(args, cwd=subtitle_cwd)

@@ -215,7 +215,7 @@ Stages 1–4 plus keyframes, writes the briefing. No API key needed.
 | Option | Meaning |
 |---|---|
 | `--clips` / `-n` | Target clip count. `0` (default) = as many as possible |
-| `--min` / `--max` | Clip length in seconds (default 15–60) |
+| `--min` / `--max` | Clip length in seconds (default 60–90) |
 | `--lang` | Force language, e.g. `en`, `de`. Otherwise auto-detected |
 | `--whisper` | Whisper model: `tiny`…`large-v3` (default `large-v3`) |
 | `--vision` | Number of keyframes for the briefing, `0` = none |
@@ -289,11 +289,19 @@ what differs.
 |---|---|---|
 | `clips` | `0` | `0` = unlimited, otherwise a hard cap |
 | `min_score` | `45` | Floor; with unlimited clips this is the only quality brake |
-| `min_duration` / `max_duration` | `15` / `60` | Seconds |
+| `min_duration` / `max_duration` | `60` / `90` | Seconds. Hard bounds - see below |
 | `model` | `claude-opus-5` | Path B only |
 | `effort` | `high` | Path B only |
 | `vision_frames` | `24` | Keyframes sent to the model, `0` = off |
 | `output_language` | `en` | Language of title, hook, caption |
+
+`min_duration` and `max_duration` are hard bounds. A moment that cannot be
+placed inside the range - because no shot boundary sits far enough out, which
+happens at the tail of a video - is dropped rather than shipped short. Two
+things used to leak past the range: the floor carried an 0.8 slack factor, and
+the word-boundary correction ran after the length clamp, so it could push a
+clip up to 0.8s over the ceiling. Both are closed, so the range you configure
+is the range you get.
 
 ### `reframe`
 
@@ -329,8 +337,11 @@ fallback chain is: motion centroid → previous shot's position → frame centre
 | `workers` | `4` | Parallel renders |
 | `encoder` | `auto` | `auto` tests NVENC **functionally**, else libx264 |
 | `crf` | `20` | Interpreted as `-cq` under NVENC |
+| `audio_rate` | `48000` | Output sample rate. Do not raise - see note below |
 | `fps` | `30` | |
 | `loudnorm` | `true` | To −14 LUFS, the TikTok standard |
+
+`loudnorm` resamples to 192 kHz internally. `audio_rate` pins the output back to a rate the platforms actually expect - without it the AAC encoder clamps to its own 96 kHz maximum.
 
 ---
 

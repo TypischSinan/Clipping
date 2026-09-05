@@ -29,8 +29,10 @@ select:
   # Score floor. With an unlimited clip count this is the only quality brake -
   # without it every unremarkable window ends up in the render.
   min_score: 45
-  min_duration: 15.0
-  max_duration: 60.0
+  # Hard bounds, not suggestions: a clip that cannot be placed inside this
+  # range is dropped rather than shipped short or long.
+  min_duration: 60.0
+  max_duration: 90.0
   model: claude-opus-5
   effort: high
   # Language of title, hook and caption - the text shown in the video and under
@@ -99,4 +101,5 @@ render:
   preset: p5
   fps: 30
   audio_bitrate: 192k
+  audio_rate: 48000        # 48k/44.1k are what the platforms expect; see render.py
   loudnorm: true           # to -14 LUFS, the TikTok standard

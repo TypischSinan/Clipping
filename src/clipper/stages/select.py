@@ -287,8 +287,16 @@ def _finalize(
         # Solve length and cut boundary together rather than one after the other.
         end = snap_end_within(start, cand.end, shots, min_d, max_d, hard_max=hard_max)
         if words:
-            start = _avoid_word_split(start, words, edge="start")
-            end = _avoid_word_split(end, words, edge="end")
+            # The drift only ever grows a clip - the start moves back to the
+            # word's beginning, the end forward to its end. Apply each shift
+            # only while it keeps the clip inside max_duration: running long is
+            # worse than a cut landing a fraction of a second inside a word.
+            shifted = _avoid_word_split(start, words, edge="start")
+            if end - shifted <= max_d:
+                start = shifted
+            shifted = _avoid_word_split(end, words, edge="end")
+            if shifted - start <= max_d:
+                end = shifted
         return start, end
 
     cleaned: list[Candidate] = []
@@ -301,7 +309,11 @@ def _finalize(
 
         def usable(bounds: tuple[float, float]) -> bool:
             start, end = bounds
-            if start < 0 or end - start < min_d * 0.8:
+            # Both ends are hard. The floor used to carry a 0.8 slack factor,
+            # which quietly let clips ship up to 20% under min_duration - at
+            # the tail of the video, where no boundary sits far enough out,
+            # that is exactly where it bit.
+            if start < 0 or not min_d <= end - start <= max_d:
                 return False
             return all(end <= c.start or start >= c.end for c in cleaned)
 
