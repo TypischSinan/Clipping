@@ -5,7 +5,7 @@
 **A local, self-hosted alternative to OpusClip.** Drop in a YouTube link, get finished
 vertical clips out — captions burned in, subject centered, ready to post.
 
-![16:9 source on the left, the generated 9:16 clip with burned-in captions on the right](docs/demo.gif)
+![On the left the 16:9 source, with the crop window outlined in yellow and the discarded area dimmed; on the right the resulting 9:16 clip with burned-in captions](docs/demo.gif)
 
 ```bash
 clipper analyze "https://www.youtube.com/watch?v=..."   # or a local file path
