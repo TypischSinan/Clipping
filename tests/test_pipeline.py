@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from clipper.config import load_config
 from clipper.models import Candidate, ClipPlan, CropKeyframe, Shot, Word
 from clipper.stages.captions import _blocks, _render_block, _wrap
-from clipper.stages.render import _crop_x_expr
+from clipper.stages.render import _crop_x_expr, _ffmpeg_args
 from clipper.stages.scenes import snap_end_within, snap_to_shots
 from clipper.stages.select import _avoid_word_split, _finalize
 
@@ -361,3 +361,34 @@ def test_snap_end_never_exceeds_the_material():
     s = shots(0.0, 10.0, 20.0, 30.0)
     end = snap_end_within(28.0, 60.0, s, min_duration=20.0, max_duration=30.0)
     assert end <= 30.0
+
+
+# --- Render arguments -------------------------------------------------------
+
+def a_plan() -> ClipPlan:
+    return ClipPlan(
+        index=0,
+        candidate=Candidate(start=10.0, end=30.0, title="clip"),
+        crops=[CropKeyframe(t=0.0, x=100, y=0, w=608, h=1080)],
+    )
+
+
+def test_render_pins_the_audio_rate(cfg):
+    """loudnorm runs its internal chain at 192 kHz. Without an explicit -ar the
+    AAC encoder clamps to its own maximum of 96 kHz - a rate no short-form
+    platform expects, so the upload gets resampled again on their side."""
+    cfg["render"]["loudnorm"] = True
+    args, _ = _ffmpeg_args(Path("src.mp4"), a_plan(), Path("out.mp4"), cfg, "libx264")
+
+    assert "loudnorm" in " ".join(args)
+    assert "-ar" in args
+    assert args[args.index("-ar") + 1] == str(cfg["render"]["audio_rate"])
+
+
+def test_render_audio_rate_does_not_depend_on_loudnorm(cfg):
+    """Turning normalisation off must not silently change the container."""
+    cfg["render"]["loudnorm"] = False
+    args, _ = _ffmpeg_args(Path("src.mp4"), a_plan(), Path("out.mp4"), cfg, "libx264")
+
+    assert "loudnorm" not in " ".join(args)
+    assert args[args.index("-ar") + 1] == str(cfg["render"]["audio_rate"])

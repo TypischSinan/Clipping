@@ -99,4 +99,5 @@ render:
   preset: p5
   fps: 30
   audio_bitrate: 192k
+  audio_rate: 48000        # 48k/44.1k are what the platforms expect; see render.py
   loudnorm: true           # to -14 LUFS, the TikTok standard

@@ -329,8 +329,11 @@ fallback chain is: motion centroid → previous shot's position → frame centre
 | `workers` | `4` | Parallel renders |
 | `encoder` | `auto` | `auto` tests NVENC **functionally**, else libx264 |
 | `crf` | `20` | Interpreted as `-cq` under NVENC |
+| `audio_rate` | `48000` | Output sample rate. Do not raise - see note below |
 | `fps` | `30` | |
 | `loudnorm` | `true` | To −14 LUFS, the TikTok standard |
+
+`loudnorm` resamples to 192 kHz internally. `audio_rate` pins the output back to a rate the platforms actually expect - without it the AAC encoder clamps to its own 96 kHz maximum.
 
 ---
 
