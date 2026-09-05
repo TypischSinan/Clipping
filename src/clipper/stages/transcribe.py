@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from ..models import Segment, Word
 from ..utils.cuda import register_cuda_dlls
+from ..utils.ffmpeg import has_audio
 
 
 def _resolve_device(requested: str) -> tuple[str, str]:
@@ -24,7 +26,17 @@ def _resolve_device(requested: str) -> tuple[str, str]:
     return "cpu", "int8"
 
 
-def transcribe(video_path: Path, cfg: dict) -> list[Segment]:
+def transcribe(
+    video_path: Path,
+    cfg: dict,
+    on_progress: Callable[[float], None] | None = None,
+) -> list[Segment]:
+    # Nothing to transcribe without an audio track, and Whisper would raise.
+    # The rest of the pipeline copes with an empty transcript: no captions, and
+    # selection falls back to shots plus keyframes.
+    if not has_audio(video_path):
+        return []
+
     # Must run before the import: CTranslate2 resolves the CUDA DLLs on load.
     register_cuda_dlls()
     from faster_whisper import WhisperModel
@@ -53,4 +65,8 @@ def transcribe(video_path: Path, cfg: dict) -> list[Segment]:
         segments.append(
             Segment(start=seg.start, end=seg.end, text=seg.text.strip(), words=words)
         )
+        # faster-whisper yields lazily, so the segment end doubles as a
+        # position in the source - the only progress signal available here.
+        if on_progress is not None:
+            on_progress(seg.end)
     return segments

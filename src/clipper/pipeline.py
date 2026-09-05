@@ -21,6 +21,7 @@ from pathlib import Path
 
 import numpy as np
 from rich.console import Console
+from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeElapsedColumn
 
 from .config import OUT_DIR, WORK_DIR
 from .models import Candidate, ClipPlan, EnergyPeak, Segment, Shot, SourceVideo
@@ -33,6 +34,22 @@ console = Console()
 
 def _step(label: str) -> None:
     console.print(f"[bold cyan]>[/bold cyan] {label}")
+
+
+def _progress() -> Progress:
+    """A bar for the stages that otherwise run for minutes without output.
+
+    Whisper and shot detection are the two long ones, and silence there reads
+    like a hang on a first run.
+    """
+    return Progress(
+        TextColumn("  [dim]{task.description}[/dim]"),
+        BarColumn(bar_width=32),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+    )
 
 
 @dataclass
@@ -75,7 +92,11 @@ def analyze(url: str, cfg: dict, *, force: bool = False) -> Analysis:
         segments = [Segment(**s) for s in read_json(transcript_path)]
     else:
         _step("Transcribing (Whisper)")
-        segments = transcribe.transcribe(source_path, cfg)
+        with _progress() as bar:
+            task = bar.add_task("audio", total=max(source.duration, 1.0))
+            segments = transcribe.transcribe(
+                source_path, cfg, on_progress=lambda t: bar.update(task, completed=t)
+            )
         write_json(transcript_path, [s.model_dump() for s in segments])
     console.print(f"  [dim]{len(segments)} segments[/dim]")
 
@@ -85,7 +106,11 @@ def analyze(url: str, cfg: dict, *, force: bool = False) -> Analysis:
         shots = [Shot(**s) for s in read_json(shots_path)]
     else:
         _step("Detecting shots")
-        shots = scenes.detect_shots(source_path, cfg)
+        with _progress() as bar:
+            task = bar.add_task("frames", total=max(source.duration, 1.0))
+            shots = scenes.detect_shots(
+                source_path, cfg, on_progress=lambda t: bar.update(task, completed=t)
+            )
         write_json(shots_path, [s.model_dump() for s in shots])
     avg = source.duration / max(len(shots), 1)
     console.print(f"  [dim]{len(shots)} shots, {avg:.1f}s on average[/dim]")
@@ -105,8 +130,13 @@ def analyze(url: str, cfg: dict, *, force: bool = False) -> Analysis:
     return Analysis(source, segments, shots, times, energy, peaks)
 
 
-def load_analysis(video_id: str) -> Analysis:
-    """Load a previously computed analysis from the cache."""
+def load_analysis(video_id: str, cfg: dict) -> Analysis:
+    """Load a previously computed analysis from the cache.
+
+    Takes the config because the peaks are derived, not stored: with a
+    hard-coded percentile `select` and `build` would see different peaks than
+    `analyze` did, without saying so.
+    """
     work = WORK_DIR / video_id
     if not (work / "source.json").exists():
         raise FileNotFoundError(
@@ -117,7 +147,7 @@ def load_analysis(video_id: str) -> Analysis:
     shots = [Shot(**s) for s in read_json(work / "shots.json")]
     loaded = np.load(work / "energy.npz")
     times, energy = loaded["times"], loaded["energy"]
-    peaks = audio.find_peaks(times, energy, {"audio": {"peak_percentile": 90}})
+    peaks = audio.find_peaks(times, energy, cfg)
     return Analysis(source, segments, shots, times, energy, peaks)
 
 
@@ -256,7 +286,13 @@ def load_candidates(video_id: str) -> list[Candidate]:
 # Stages 6-8
 # --------------------------------------------------------------------------
 
-def build(analysis: Analysis, candidates: list[Candidate], cfg: dict) -> list[ClipPlan]:
+def build(
+    analysis: Analysis,
+    candidates: list[Candidate],
+    cfg: dict,
+    *,
+    force: bool = False,
+) -> list[ClipPlan]:
     ensure_ffmpeg()
     source = analysis.source
     source_path = Path(source.path)
@@ -264,6 +300,10 @@ def build(analysis: Analysis, candidates: list[Candidate], cfg: dict) -> list[Cl
 
     out_dir = OUT_DIR / source.video_id
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    def out_path_for(i: int, cand: Candidate) -> Path:
+        name = f"{i:03d}_{int(cand.score):03d}_{render.safe_filename(cand.title)}.mp4"
+        return out_dir / name
 
     def make_clip(i: int, cand: Candidate) -> ClipPlan:
         crops = reframe.analyze(source_path, cand.start, cand.end, analysis.shots, cfg)
@@ -285,24 +325,41 @@ def build(analysis: Analysis, candidates: list[Candidate], cfg: dict) -> list[Cl
             crops=crops,
             ass_path=str(ass_path) if ass_path else None,
         )
-        name = f"{i:03d}_{int(cand.score):03d}_{render.safe_filename(cand.title)}.mp4"
-        out_path = out_dir / name
+        out_path = out_path_for(i, cand)
         render.render_clip(source_path, plan, out_path, cfg)
         plan.out_path = str(out_path)
         return plan
+
+    def reuse(i: int, cand: Candidate) -> ClipPlan:
+        """A clip that is already on disk, without re-rendering it."""
+        return ClipPlan(
+            index=i, candidate=cand, crops=[], out_path=str(out_path_for(i, cand))
+        )
+
+    # Reuse what is already rendered. Tweaking one caption parameter otherwise
+    # costs a full pass over every clip, and the analysis is cached anyway.
+    todo: list[tuple[int, Candidate]] = []
+    plans: list[ClipPlan] = []
+    for i, cand in enumerate(candidates, start=1):
+        if not force and out_path_for(i, cand).exists():
+            plans.append(reuse(i, cand))
+        else:
+            todo.append((i, cand))
+
+    if plans:
+        _step(f"{len(plans)} clips already rendered, skipping (--force to redo)")
+    if not todo:
+        _write_manifest(out_dir, source, sorted(plans, key=lambda p: p.index))
+        return sorted(plans, key=lambda p: p.index)
 
     # Parallel because both expensive steps release the GIL: OpenCV decodes in
     # C, ffmpeg runs as its own process. Without NVENC, libx264 on the CPU is
     # the bottleneck - and there are plenty of threads for that.
     workers = max(1, int(cfg["render"].get("workers", 4)))
-    plans: list[ClipPlan] = []
-    _step(f"Rendering {len(candidates)} clips ({workers} in parallel)")
+    _step(f"Rendering {len(todo)} clips ({workers} in parallel)")
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {
-            pool.submit(make_clip, i, cand): (i, cand)
-            for i, cand in enumerate(candidates, start=1)
-        }
+        futures = {pool.submit(make_clip, i, cand): (i, cand) for i, cand in todo}
         for future in as_completed(futures):
             i, cand = futures[future]
             try:
@@ -374,7 +431,7 @@ def run_pipeline(
         return []
     console.print(f"  [dim]{len(cands)} clips selected[/dim]")
 
-    return build(analysis, cands, cfg)
+    return build(analysis, cands, cfg, force=force)
 
 
 def _write_manifest(out_dir: Path, source: SourceVideo, plans: list[ClipPlan]) -> None:

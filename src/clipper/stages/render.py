@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 
 from ..models import ClipPlan
-from ..utils.ffmpeg import pick_encoder, run
+from ..utils.ffmpeg import has_audio, pick_encoder, run
 
 
 def _crop_x_expr(plan: ClipPlan) -> str:
@@ -42,6 +42,7 @@ def _ffmpeg_args(
     out_path: Path,
     cfg: dict,
     encoder: str,
+    with_audio: bool = True,
 ) -> tuple[list[str], Path | None]:
     """Build the single ffmpeg call for one clip.
 
@@ -80,7 +81,7 @@ def _ffmpeg_args(
         "-vf", ",".join(filters),
     ]
 
-    if rc["loudnorm"]:
+    if with_audio and rc["loudnorm"]:
         # -14 LUFS is the target TikTok normalises to anyway.
         args += ["-af", "loudnorm=I=-14:TP=-1.5:LRA=11"]
 
@@ -94,17 +95,23 @@ def _ffmpeg_args(
     else:
         args += ["-c:v", encoder, "-preset", "medium", "-crf", str(rc["crf"])]
 
-    args += [
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", rc["audio_bitrate"],
-        # Pin the audio rate. loudnorm runs its internal chain at 192 kHz, and
-        # without an explicit rate the AAC encoder just clamps to its own
-        # maximum of 96 kHz - a rate no short-form platform expects, so every
-        # upload gets resampled again on their side.
-        "-ar", str(rc["audio_rate"]),
-        "-movflags", "+faststart",
-        str(out_path),
-    ]
+    args += ["-pix_fmt", "yuv420p"]
+
+    if with_audio:
+        args += [
+            "-c:a", "aac", "-b:a", rc["audio_bitrate"],
+            # Pin the audio rate. loudnorm runs its internal chain at 192 kHz,
+            # and without an explicit rate the AAC encoder just clamps to its
+            # own maximum of 96 kHz - a rate no short-form platform expects, so
+            # every upload gets resampled again on their side.
+            "-ar", str(rc["audio_rate"]),
+        ]
+    else:
+        # Asking for an audio codec on a source without an audio stream makes
+        # ffmpeg fail outright rather than just producing a silent file.
+        args += ["-an"]
+
+    args += ["-movflags", "+faststart", str(out_path)]
     return args, subtitle_cwd
 
 
@@ -115,7 +122,9 @@ def render_clip(
     cfg: dict,
 ) -> Path:
     encoder = pick_encoder(cfg["render"]["encoder"])
-    args, subtitle_cwd = _ffmpeg_args(source_path, plan, out_path, cfg, encoder)
+    args, subtitle_cwd = _ffmpeg_args(
+        source_path, plan, out_path, cfg, encoder, with_audio=has_audio(source_path)
+    )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     run(args, cwd=subtitle_cwd)

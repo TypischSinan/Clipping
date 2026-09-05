@@ -1,12 +1,14 @@
 # Clipper
 
+[![CI](https://github.com/TypischSinan/Clipping/actions/workflows/ci.yml/badge.svg)](https://github.com/TypischSinan/Clipping/actions/workflows/ci.yml)
+
 **A local, self-hosted alternative to OpusClip.** Drop in a YouTube link, get finished
 vertical clips out — captions burned in, subject centered, ready to post.
 
 ![16:9 source on the left, the generated 9:16 clip with burned-in captions on the right](docs/demo.gif)
 
 ```bash
-clipper analyze "https://www.youtube.com/watch?v=..."
+clipper analyze "https://www.youtube.com/watch?v=..."   # or a local file path
 clipper select <video-id> --from clips.json
 clipper build <video-id>
 ```
@@ -30,6 +32,7 @@ Three things set it apart from most open-source clippers:
 ## Contents
 
 - [Why this exists](#why-this-exists)
+- [Input](#input)
 - [What the pipeline does](#what-the-pipeline-does)
 - [Installation](#installation)
 - [Two paths through the pipeline](#two-paths-through-the-pipeline)
@@ -68,6 +71,24 @@ Typical uses:
   [Legal](#legal) before using it that way.
 
 ---
+
+## Input
+
+Anything yt-dlp accepts, or a path to a file already on disk:
+
+```bash
+clipper analyze "https://www.youtube.com/watch?v=..."
+clipper analyze ~/recordings/episode-14.mkv
+```
+
+A local file is used where it lies rather than copied — source videos run to
+gigabytes and a second copy buys nothing. Only the derived artefacts go into
+`work/`.
+
+Sources without an audio track work too: screen recordings, silent B-roll,
+music videos with the audio stripped. The transcript comes out empty, the
+energy curve is skipped, and selection falls back to shot boundaries plus
+keyframes. Rendering drops the audio stream instead of failing.
 
 ## What the pipeline does
 
@@ -219,6 +240,7 @@ Stages 1–4 plus keyframes, writes the briefing. No API key needed.
 | `--lang` | Force language, e.g. `en`, `de`. Otherwise auto-detected |
 | `--whisper` | Whisper model: `tiny`…`large-v3` (default `large-v3`) |
 | `--vision` | Number of keyframes for the briefing, `0` = none |
+| `--aspect` | Output format: `9:16` (default), `4:5`, `1:1` |
 | `--force` | Discard all caches and recompute |
 | `-c` / `--config` | Layer your own YAML over the defaults |
 
@@ -234,7 +256,29 @@ Supports `--min`, `--max`, `--clips`, `-c`.
 
 ### `clipper build <video-id>`
 
-Stages 6–8 from the stored selection. `--no-captions` renders without subtitles.
+Stages 6–8 from the stored selection.
+
+| Option | Meaning |
+|---|---|
+| `--aspect` | Output format: `9:16` (default), `4:5`, `1:1` |
+| `--no-captions` | Render without burned-in captions |
+| `--force` | Re-render clips that already exist |
+
+Clips already on disk are reused. Changing one caption parameter otherwise
+costs a full pass over every clip, and the analysis is cached anyway.
+
+### `clipper clean [video-id]`
+
+Deletes cached working data and reports what it freed. Asks before deleting.
+
+| Option | Meaning |
+|---|---|
+| `--outputs` | Also delete the rendered clips in `out/` |
+| `--yes` / `-y` | Skip the confirmation |
+
+By default only `work/` goes — source video, transcript, shots, energy curve,
+keyframes. All of that is reproducible. The rendered clips are kept unless
+`--outputs` is given, because they are the actual result.
 
 ### `clipper run <url>`
 
@@ -244,6 +288,7 @@ Everything in one go. In addition to the `analyze` options:
 |---|---|
 | `--no-llm` | Heuristic selection instead of Claude |
 | `--no-captions` | No burned-in captions |
+| `--aspect` | Output format: `9:16` (default), `4:5`, `1:1` |
 | `--reselect` | Recompute only the selection, keep the rest of the cache |
 
 ### `clipper list [video-id]`
@@ -307,7 +352,7 @@ is the range you get.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `target_width` / `target_height` | `1080` / `1920` | Output format |
+| `target_width` / `target_height` | `1080` / `1920` | Output size, or use `--aspect` |
 | `sample_fps` | `4.0` | Sampling rate for subject detection |
 | `min_face_weight` | `0.001` | Minimum face size (area × score) |
 
@@ -520,7 +565,7 @@ python -m pytest -q
 python -m ruff check src tests
 ```
 
-34 tests. The focus is on cut boundaries and caption layout — that's where a bug only
+45 tests, run on every push and pull request by the CI workflow. The focus is on cut boundaries and caption layout — that's where a bug only
 shows up when you watch the result, not as an exception. These tests caught three real
 bugs during development:
 

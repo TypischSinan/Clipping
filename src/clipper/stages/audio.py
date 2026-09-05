@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from ..models import EnergyPeak
-from ..utils.ffmpeg import decode_audio_mono
+from ..utils.ffmpeg import decode_audio_mono, has_audio
 
 SAMPLE_RATE = 16_000
 
@@ -20,6 +20,10 @@ SAMPLE_RATE = 16_000
 def energy_envelope(video_path: Path, cfg: dict) -> tuple[np.ndarray, np.ndarray]:
     """Return (times, normalised_energy), both the same length."""
     window = cfg["audio"]["window"]
+    # No audio track is a normal case, not an error: the energy curve is an
+    # auxiliary signal. Transcript, shots and keyframes work without it.
+    if not has_audio(video_path):
+        return np.zeros(0), np.zeros(0)
     samples = decode_audio_mono(video_path, SAMPLE_RATE)
 
     hop = max(1, int(window * SAMPLE_RATE))

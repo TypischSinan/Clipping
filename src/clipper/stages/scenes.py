@@ -3,6 +3,7 @@ boundary looks intentional, a cut in the middle looks like a mistake."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from scenedetect import ContentDetector, SceneManager, open_video
@@ -10,7 +11,11 @@ from scenedetect import ContentDetector, SceneManager, open_video
 from ..models import Shot
 
 
-def detect_shots(video_path: Path, cfg: dict) -> list[Shot]:
+def detect_shots(
+    video_path: Path,
+    cfg: dict,
+    on_progress: Callable[[float], None] | None = None,
+) -> list[Shot]:
     sc = cfg["scenes"]
     video = open_video(str(video_path))
     manager = SceneManager()
@@ -20,7 +25,17 @@ def detect_shots(video_path: Path, cfg: dict) -> list[Shot]:
             min_scene_len=int(sc["min_scene_len"] * video.frame_rate),
         )
     )
-    manager.detect_scenes(video, show_progress=False)
+
+    # The detector callback fires on every cut it finds, which on typical
+    # material is often enough to drive a progress bar.
+    callback = None
+    if on_progress is not None:
+        rate = video.frame_rate or 1.0
+
+        def callback(_image, frame_num: int) -> None:
+            on_progress(frame_num / rate)
+
+    manager.detect_scenes(video, show_progress=False, callback=callback)
     scene_list = manager.get_scene_list()
 
     if not scene_list:

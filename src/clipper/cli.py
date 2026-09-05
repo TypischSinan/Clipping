@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,7 @@ from rich.console import Console
 from rich.table import Table
 
 from . import pipeline
-from .config import OUT_DIR, load_config
+from .config import ASPECT_PRESETS, OUT_DIR, WORK_DIR, aspect_override, load_config
 from .models import ClipPlan
 from .pipeline import run_pipeline
 from .utils.cache import read_json
@@ -31,6 +32,13 @@ for _stream in (sys.stdout, sys.stderr):
 
 app = typer.Typer(add_completion=False, help="Turn long-form YouTube videos into vertical clips.")
 console = Console()
+
+
+def _merge(base: dict, extra: dict) -> dict:
+    """Shallow-merge one section dict into another."""
+    for section, values in extra.items():
+        base.setdefault(section, {}).update(values)
+    return base
 
 
 def _overrides(**kwargs: Any) -> dict:
@@ -85,6 +93,9 @@ def run(
     vision_frames: int | None = typer.Option(
         None, "--vision", help="Keyframes sent to the model (0 = off)"
     ),
+    aspect: str | None = typer.Option(
+        None, "--aspect", help=f"Output format: {' | '.join(ASPECT_PRESETS)}"
+    ),
     no_captions: bool = typer.Option(False, "--no-captions", help="Without captions"),
     no_llm: bool = typer.Option(
         False, "--no-llm", help="Heuristic selection instead of Claude (no API key needed)"
@@ -102,6 +113,8 @@ def run(
     )
     if no_captions:
         overrides["captions"] = {"enabled": False}
+    if aspect:
+        _merge(overrides, aspect_override(aspect))
     cfg = load_config(config, overrides)
 
     use_llm = not no_llm
@@ -133,6 +146,9 @@ def analyze(
     vision_frames: int | None = typer.Option(
         None, "--vision", help="Number of keyframes for the briefing"
     ),
+    aspect: str | None = typer.Option(
+        None, "--aspect", help=f"Output format: {' | '.join(ASPECT_PRESETS)}"
+    ),
     force: bool = typer.Option(False, "--force", help="Discard all caches"),
     config: Path | None = typer.Option(None, "--config", "-c", help="Custom YAML config"),
 ) -> None:
@@ -141,10 +157,13 @@ def analyze(
     Needs no API key: the briefing is meant to be read and answered by a Claude
     Code session.
     """
-    cfg = load_config(config, _overrides(
+    overrides = _overrides(
         clips=clips, min_duration=min_duration, max_duration=max_duration,
         language=language, whisper_model=whisper_model, vision_frames=vision_frames,
-    ))
+    )
+    if aspect:
+        _merge(overrides, aspect_override(aspect))
+    cfg = load_config(config, overrides)
 
     analysis = pipeline.analyze(url, cfg, force=force)
     brief = pipeline.write_brief(analysis, cfg)
@@ -195,7 +214,7 @@ def select_cmd(
         console.print("[red]Expected {\"clips\": [...]} or a plain list.[/red]")
         raise typer.Exit(code=1)
 
-    analysis = pipeline.load_analysis(video_id)
+    analysis = pipeline.load_analysis(video_id, cfg)
     try:
         cleaned = pipeline.store_candidates(analysis, raw, cfg)
     except ValidationError as exc:
@@ -232,16 +251,27 @@ def select_cmd(
 @app.command()
 def build(
     video_id: str = typer.Argument(..., help="Video ID from 'clipper analyze'"),
+    aspect: str | None = typer.Option(
+        None, "--aspect", help=f"Output format: {' | '.join(ASPECT_PRESETS)}"
+    ),
     no_captions: bool = typer.Option(False, "--no-captions", help="Without captions"),
+    force: bool = typer.Option(
+        False, "--force", help="Re-render clips that already exist"
+    ),
     config: Path | None = typer.Option(None, "--config", "-c", help="Custom YAML config"),
 ) -> None:
-    """Render the clips from the stored selection."""
-    overrides = {"captions": {"enabled": False}} if no_captions else None
-    cfg = load_config(config, overrides)
+    """Render the clips from the stored selection.
 
-    analysis = pipeline.load_analysis(video_id)
+    Clips that already exist on disk are reused unless --force is given.
+    """
+    overrides: dict = {"captions": {"enabled": False}} if no_captions else {}
+    if aspect:
+        _merge(overrides, aspect_override(aspect))
+    cfg = load_config(config, overrides or None)
+
+    analysis = pipeline.load_analysis(video_id, cfg)
     candidates = pipeline.load_candidates(video_id)
-    plans = pipeline.build(analysis, candidates, cfg)
+    plans = pipeline.build(analysis, candidates, cfg, force=force)
 
     if not plans:
         raise typer.Exit(code=1)
@@ -275,6 +305,65 @@ def list_clips(
 
     if not found:
         console.print("[yellow]No clips generated yet.[/yellow]")
+
+
+def _dir_size(path: Path) -> int:
+    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+
+
+def _fmt_size(n: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024.0
+    return f"{n:.1f} GB"
+
+
+@app.command()
+def clean(
+    video_id: str | None = typer.Argument(None, help="Video ID, or all if omitted"),
+    outputs: bool = typer.Option(
+        False, "--outputs", help="Also delete the rendered clips in out/"
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation"),
+) -> None:
+    """Delete cached working data.
+
+    By default only work/ goes - the source video, transcript, shots, energy
+    curve and keyframes. Those are all reproducible from the source. The
+    rendered clips in out/ are kept unless --outputs is given, because they are
+    the actual result and re-rendering them is the expensive part.
+    """
+    targets: list[Path] = []
+    roots = [WORK_DIR] + ([OUT_DIR] if outputs else [])
+    for root in roots:
+        if not root.exists():
+            continue
+        if video_id:
+            candidate = root / video_id
+            if candidate.is_dir():
+                targets.append(candidate)
+        else:
+            targets += [d for d in sorted(root.iterdir()) if d.is_dir()]
+
+    if not targets:
+        console.print("[yellow]Nothing to clean.[/yellow]")
+        return
+
+    total = 0
+    for t in targets:
+        size = _dir_size(t)
+        total += size
+        console.print(f"  [dim]{t.parent.name}/{t.name}[/dim]  {_fmt_size(size)}")
+    console.print(f"\n[bold]{len(targets)} directories, {_fmt_size(total)}[/bold]")
+
+    if not yes and not typer.confirm("Delete these?"):
+        console.print("[yellow]Cancelled.[/yellow]")
+        raise typer.Exit(code=1)
+
+    for t in targets:
+        shutil.rmtree(t, ignore_errors=True)
+    console.print(f"[green]Freed {_fmt_size(total)}.[/green]")
 
 
 if __name__ == "__main__":

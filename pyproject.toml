@@ -7,7 +7,9 @@ dependencies = [
     "yt-dlp>=2025.1.15",
     "faster-whisper>=1.1.0",
     "scenedetect>=0.6.4",
-    "opencv-python>=4.10.0",
+    # headless: we never open a window, and the GUI build needs libGL, which
+    # a CI container does not have.
+    "opencv-python-headless>=4.10.0",
     "numpy>=1.26,<3",
     "anthropic>=0.40",
     "pydantic>=2.9",

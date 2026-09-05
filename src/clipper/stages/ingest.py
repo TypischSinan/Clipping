@@ -1,7 +1,12 @@
-"""Stage 1: YouTube link -> local mp4 + metadata."""
+"""Stage 1: source video -> local mp4 + metadata.
+
+Accepts a URL for yt-dlp or a path to a file that already exists on disk.
+"""
 
 from __future__ import annotations
 
+import hashlib
+import re
 from pathlib import Path
 
 from yt_dlp import YoutubeDL
@@ -29,7 +34,54 @@ def parse_section(spec: str) -> tuple[float, float]:
     return _to_seconds(start_text), _to_seconds(end_text)
 
 
+def _local_video_id(path: Path) -> str:
+    """Stable, readable id for a local file.
+
+    The filename alone would collide between two different videos that happen
+    to share a name, so a short hash of the absolute path is appended.
+    """
+    stem = re.sub(r"[^\w-]+", "_", path.stem)[:40].strip("_") or "local"
+    digest = hashlib.sha1(str(path.resolve()).encode("utf-8")).hexdigest()[:8]
+    return f"{stem}-{digest}"
+
+
+def _probe_source(path: Path, video_id: str, title: str, channel: str, url: str) -> SourceVideo:
+    stream = video_stream(path)
+    # Read the duration from the file, not from any metadata: on a partial
+    # download every timestamp in the pipeline refers to the file.
+    duration = float(probe(path).get("format", {}).get("duration") or 0.0)
+    return SourceVideo(
+        video_id=video_id,
+        title=title,
+        channel=channel,
+        duration=duration,
+        width=int(stream["width"]),
+        height=int(stream["height"]),
+        fps=parse_fps(stream.get("r_frame_rate", "30/1")),
+        path=str(path),
+        url=url,
+    )
+
+
+def ingest_local(path: Path, work_dir: Path) -> SourceVideo:
+    """Use a file that is already on disk.
+
+    The file is referenced where it lies rather than copied - source videos run
+    to gigabytes and a second copy buys nothing. Only the derived artefacts go
+    into the work directory.
+    """
+    video_id = _local_video_id(path)
+    (work_dir / video_id).mkdir(parents=True, exist_ok=True)
+    return _probe_source(path, video_id, path.stem, "", str(path))
+
+
 def download(url: str, work_dir: Path, cfg: dict, force: bool = False) -> SourceVideo:
+    # A path that exists wins over URL handling - otherwise yt-dlp tries to
+    # parse "C:/..." as a URL scheme and fails with an unhelpful message.
+    candidate = Path(url).expanduser()
+    if candidate.exists() and candidate.is_file():
+        return ingest_local(candidate, work_dir)
+
     max_height = cfg["ingest"]["max_height"]
     sections = cfg["ingest"].get("download_sections")
 
@@ -76,20 +128,10 @@ def download(url: str, work_dir: Path, cfg: dict, force: bool = False) -> Source
             raise RuntimeError(f"Download produced no video file in {target_dir}")
         path = candidates[0]
 
-    stream = video_stream(path)
-    # Read the duration from the file, not from yt-dlp metadata: on a partial
-    # download every timestamp in the pipeline refers to the file, while the
-    # metadata reports the length of the full video.
-    file_duration = float(probe(path).get("format", {}).get("duration") or 0.0)
-
-    return SourceVideo(
-        video_id=video_id,
-        title=info.get("title", ""),
-        channel=info.get("uploader", "") or info.get("channel", ""),
-        duration=file_duration or float(info.get("duration") or 0.0),
-        width=int(stream["width"]),
-        height=int(stream["height"]),
-        fps=parse_fps(stream.get("r_frame_rate", "30/1")),
-        path=str(path),
-        url=url,
+    return _probe_source(
+        path,
+        video_id,
+        info.get("title", ""),
+        info.get("uploader", "") or info.get("channel", ""),
+        url,
     )

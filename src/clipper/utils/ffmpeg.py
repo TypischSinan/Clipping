@@ -60,6 +60,16 @@ def video_stream(path: Path) -> dict:
     raise FFmpegError(f"No video stream in {path}")
 
 
+def has_audio(path: Path) -> bool:
+    """Whether the file carries at least one audio stream.
+
+    Screen recordings, silent B-roll and some music videos have none. Every
+    stage that touches audio has to check first, otherwise the run dies after
+    the download and the transcription - the two expensive steps.
+    """
+    return any(s.get("codec_type") == "audio" for s in probe(path).get("streams", []))
+
+
 def parse_fps(rate: str) -> float:
     """'30000/1001' -> 29.97"""
     if "/" in rate:

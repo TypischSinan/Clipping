@@ -433,3 +433,73 @@ def test_word_drift_does_not_push_a_clip_past_max_duration(cfg):
     )
     for c in out:
         assert c.end - c.start <= 90.0, c.end - c.start
+
+
+# --- Input handling ---------------------------------------------------------
+
+def test_local_video_id_is_stable_and_collision_resistant(tmp_path):
+    from clipper.stages.ingest import _local_video_id
+    a = tmp_path / "sub_a" / "clip.mp4"
+    b = tmp_path / "sub_b" / "clip.mp4"
+    a.parent.mkdir()
+    b.parent.mkdir()
+    a.touch()
+    b.touch()
+    # Same filename, different paths - the ids must not collide, but each has
+    # to be stable across calls or the cache would be rebuilt every run.
+    assert _local_video_id(a) == _local_video_id(a)
+    assert _local_video_id(a) != _local_video_id(b)
+    assert _local_video_id(a).startswith("clip-")
+
+
+def test_local_video_id_survives_awkward_filenames(tmp_path):
+    from clipper.stages.ingest import _local_video_id
+    f = tmp_path / "Mr Beast: 7 Days!! (final).mp4"
+    f.touch()
+    vid = _local_video_id(f)
+    assert "/" not in vid and ":" not in vid and " " not in vid
+
+
+def test_aspect_presets_resolve_and_reject():
+    from clipper.config import ASPECT_PRESETS, aspect_override
+    assert aspect_override("9:16")["reframe"]["target_height"] == 1920
+    assert aspect_override("1:1")["reframe"]["target_height"] == 1080
+    assert set(ASPECT_PRESETS) == {"9:16", "4:5", "1:1"}
+    with pytest.raises(ValueError):
+        aspect_override("16:9")
+
+
+# --- Sources without an audio track -----------------------------------------
+
+def test_ffmpeg_args_drop_audio_when_the_source_has_none(cfg):
+    """Asking for an audio codec on a silent source makes ffmpeg fail outright,
+    so the arguments have to change - not just the result."""
+    plan = ClipPlan(
+        index=1,
+        candidate=Candidate(start=0.0, end=10.0, title="x"),
+        crops=[CropKeyframe(t=0.0, x=0, y=0, w=608, h=1080)],
+    )
+    args, _ = _ffmpeg_args(Path("in.mp4"), plan, Path("out.mp4"), cfg, "libx264",
+                           with_audio=False)
+    assert "-an" in args
+    assert "-c:a" not in args and "-ar" not in args
+
+    args, _ = _ffmpeg_args(Path("in.mp4"), plan, Path("out.mp4"), cfg, "libx264",
+                           with_audio=True)
+    assert "-an" not in args
+    assert args[args.index("-ar") + 1] == str(cfg["render"]["audio_rate"])
+
+
+def test_find_peaks_handles_an_empty_envelope(cfg):
+    """A silent source yields no envelope; the peak search must not raise."""
+    import numpy as np
+
+    from clipper.stages.audio import find_peaks
+    assert find_peaks(np.zeros(0), np.zeros(0), cfg) == []
+
+
+def test_fmt_size_rounds_per_unit():
+    from clipper.cli import _fmt_size
+    assert _fmt_size(512) == "512 B"
+    assert _fmt_size(4096) == "4.0 KB"
+    assert _fmt_size(3_000_000_000).endswith("GB")
