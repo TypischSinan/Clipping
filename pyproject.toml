@@ -1,0 +1,33 @@
+[project]
+name = "clipper"
+version = "0.1.0"
+description = "YouTube long-form -> vertical short-form clips. Local pipeline."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "yt-dlp>=2025.1.15",
+    "faster-whisper>=1.1.0",
+    "scenedetect>=0.6.4",
+    "opencv-python>=4.10.0",
+    "numpy>=1.26,<3",
+    "anthropic>=0.40",
+    "pydantic>=2.9",
+    "typer>=0.15",
+    "rich>=13.9",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+cuda = [
+    "nvidia-cublas-cu12",
+    "nvidia-cudnn-cu12>=9.0",
+]
+
+[project.scripts]
+clipper = "clipper.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/clipper"]

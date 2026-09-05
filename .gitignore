@@ -1,0 +1,20 @@
+# Virtuelle Umgebung
+.venv/
+
+# Arbeitsdaten: Quellvideos, Transkripte, Keyframes, gerenderte Clips.
+# Nichts davon gehoert ins Repo - allein die Clips eines Videos sind ~750 MB.
+work/
+out/
+
+# Wird beim ersten Lauf automatisch nachgeladen
+models/*.onnx
+
+# Eigene Konfigurationen
+config/*.local.yaml
+config/test.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/

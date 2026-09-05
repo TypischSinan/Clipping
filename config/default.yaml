@@ -1,0 +1,101 @@
+# Standardkonfiguration. Ueberschreibbar per --config eigene.yaml oder CLI-Flags.
+
+ingest:
+  # Hoehere Aufloesung = besserer Crop-Spielraum. 1080p ist der sweet spot.
+  max_height: 1080
+  # Sections erlauben Teilverarbeitung langer Videos, z.B. "*0:00-10:00"
+  download_sections: null
+
+transcribe:
+  model: large-v3          # tiny|base|small|medium|large-v3|distil-large-v3
+  device: auto             # auto|cuda|cpu
+  compute_type: auto       # auto -> float16 auf CUDA, int8 auf CPU
+  language: null           # null = automatische Erkennung
+  vad_filter: true         # schneidet Stille, verhindert Halluzinationen
+
+scenes:
+  # Niedrigerer Threshold = mehr erkannte Schnitte. MrBeast schneidet sehr schnell.
+  threshold: 27.0
+  min_scene_len: 0.4       # Sekunden
+
+audio:
+  # Fenster fuer die RMS-Huellkurve. Kleiner = reaktiver auf kurze Schreie.
+  window: 0.25             # Sekunden
+  peak_percentile: 90      # ab welchem Perzentil ein Fenster als Peak zaehlt
+
+select:
+  # 0 = so viele Clips wie das Material hergibt. Eine feste Zahl deckelt.
+  clips: 0
+  # Untergrenze fuer den Score. Bei unbegrenzter Clipzahl ist das die einzige
+  # Qualitaetsbremse - ohne sie landet auch jedes belanglose Fenster im Render.
+  min_score: 45
+  min_duration: 15.0
+  max_duration: 60.0
+  model: claude-opus-5
+  effort: high
+  # Sprache von title, hook und caption - also des Textes, der im Video und
+  # unter dem Post steht. Unabhaengig von der Sprache des Quellmaterials.
+  output_language: en
+  # Anzahl Keyframes, die als Bilder an das Modell gehen (visuelles Verstaendnis).
+  # 0 = nur Transkript + Energie + Shots (billiger, schlechter bei Action-Content).
+  vision_frames: 24
+
+reframe:
+  target_width: 1080
+  target_height: 1920
+  # Analyse-Rate fuer die Motiverkennung. 4 fps reicht und ist schnell.
+  sample_fps: 4.0
+  # Crop bleibt pro Shot statisch - sieht bei schnellen Schnitten besser aus
+  # als ein dauernd pannender Crop und ist deutlich billiger zu rendern.
+  static_per_shot: true
+  # Mindestgroesse eines Gesichts, damit der Crop ihm folgt - als Anteil an
+  # der Bildflaeche mal Erkennungs-Score. Ohne diese Schwelle folgt der Crop
+  # auch Personen weit im Hintergrund und verpasst die eigentliche Szene.
+  # Gemessen: echte Motive liegen im Median bei 0.005, Hintergrund unter 0.001.
+  min_face_weight: 0.001
+  # Wenn kein Motiv gefunden wird: center | blur_pad
+  fallback: blur_pad
+
+captions:
+  enabled: true
+  font: Arial Black
+  font_size: 96
+  primary_color: "&H00FFFFFF"    # ASS-Format: &HAABBGGRR
+  highlight_color: "&H0000F0FF"  # aktives Wort (gelb)
+  outline: 6
+  shadow: 2
+  margin_v: 420                  # Abstand vom unteren Rand in Pixeln
+  # Bei Schriftgroesse 96 in Arial Black passen rund 22 Zeichen in die
+  # Bildbreite. Die laengere Standzeit kommt deshalb aus der zweiten Zeile,
+  # nicht aus breiteren Zeilen - 20 laesst etwas Sicherheitsabstand.
+  # Wie viele Woerter gleichzeitig im Bild stehen. Das ist die fuehrende
+  # Grenze; die Zeichenwerte darunter greifen nur noch als Ueberlaufschutz,
+  # damit ein langes Wort nicht aus dem Bild laeuft.
+  max_words: 4
+  max_chars_per_line: 20
+  max_lines: 2
+  # Sprechpause, ab der ein neuer Block beginnt. Ohne das bliebe eine Zeile
+  # waehrend einer langen Pause tot im Bild stehen.
+  max_gap: 0.6
+  uppercase: true
+  strip_punctuation: true
+  pop: true                      # aktives Wort kurz vergroessern
+
+  hook:
+    enabled: true
+    duration: 2.0                # Sekunden, ab Clipanfang
+    font_size: 110
+    color: "&H00FFFFFF"
+    outline: 7
+    margin_v: 300                # Abstand vom OBEREN Rand
+    max_chars_per_line: 18
+    max_lines: 3
+    uppercase: true
+
+render:
+  encoder: auto            # auto|h264_nvenc|hevc_nvenc|libx264
+  crf: 20                  # bei NVENC als -cq interpretiert
+  preset: p5
+  fps: 30
+  audio_bitrate: 192k
+  loudnorm: true           # auf -14 LUFS, TikTok-Standard
