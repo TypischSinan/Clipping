@@ -1,10 +1,9 @@
-"""Stufe 6: 16:9 -> 9:16 mit Motivverfolgung.
+"""Stage 6: 16:9 -> 9:16 with subject tracking.
 
-Bewusste Designentscheidung: der Crop bleibt pro Shot statisch. Ein Crop, der
-innerhalb eines Shots mitwandert, sieht bei schnell geschnittenem Material
-unruhig aus und kostet deutlich mehr Rechenzeit. Ein harter Sprung auf der
-Schnittgrenze faellt dagegen gar nicht auf, weil dort ohnehin das ganze Bild
-wechselt.
+Deliberate design decision: the crop stays static per shot. A crop that pans
+within a shot looks restless on fast-cut material and costs considerably more
+compute. A hard jump on a cut boundary, by contrast, is not noticeable at all,
+because the whole frame changes there anyway.
 """
 
 from __future__ import annotations
@@ -14,9 +13,9 @@ import urllib.request
 from bisect import bisect_right
 from pathlib import Path
 
-# Muss vor dem cv2-Import stehen. Unterdrueckt die Meldung des neuen DNN-Backends
-# ("Targets are not supported by the new graph engine"), die pro Clip erscheint
-# und rein informativ ist.
+# Must come before the cv2 import. Silences the new DNN backend's message
+# ("Targets are not supported by the new graph engine"), which shows up once per
+# clip and is purely informational.
 os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
 
 import cv2
@@ -33,7 +32,7 @@ YUNET_FILE = "face_detection_yunet_2023mar.onnx"
 
 
 def ensure_yunet() -> Path:
-    """Laedt das YuNet-Modell (~340 KB) beim ersten Lauf herunter."""
+    """Download the YuNet model (~340 KB) on first run."""
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     path = MODELS_DIR / YUNET_FILE
     if not path.exists():
@@ -42,7 +41,7 @@ def ensure_yunet() -> Path:
 
 
 class SubjectLocator:
-    """Findet pro Frame die horizontale Bildmitte des Motivs (0..1)."""
+    """Locates the subject's horizontal centre per frame (0..1)."""
 
     def __init__(
         self,
@@ -63,13 +62,13 @@ class SubjectLocator:
         self.min_weight = min_weight
 
     def faces(self, frame: np.ndarray) -> list[tuple[float, float]]:
-        """Gibt [(cx_norm, gewicht)] fuer alle erkannten Gesichter zurueck.
+        """Return [(cx_norm, weight)] for every detected face.
 
-        Gesichter unterhalb von `min_weight` werden verworfen. Der Grund ist
-        ein konkreter Fehlschnitt: eine Person weit im Hintergrund belegte
-        0,04 % der Bildflaeche, war aber die einzige Erkennung im Shot - der
-        Crop folgte ihr an den Bildrand und verpasste die eigentliche Szene.
-        Gemessen liegen echte Motive im Median bei 0,5 % der Flaeche.
+        Faces below `min_weight` are discarded. The reason is one concrete bad
+        crop: a person far in the background occupied 0.04% of the frame area
+        but was the only detection in that shot - the crop followed them to the
+        frame edge and missed the actual scene. Measured, real subjects sit at a
+        median of 0.5% of frame area.
         """
         _, dets = self.detector.detect(frame)
         if dets is None:
@@ -79,7 +78,7 @@ class SubjectLocator:
             x, y, w, h = det[0], det[1], det[2], det[3]
             score = float(det[14]) if len(det) > 14 else 1.0
             cx = (x + w / 2.0) / self.frame_w
-            # Groessere Gesichter sind naeher an der Kamera und damit wichtiger.
+            # Larger faces are closer to the camera and therefore more important.
             weight = float(w * h) / (self.frame_w * self.frame_h) * score
             if weight < self.min_weight:
                 continue
@@ -88,7 +87,7 @@ class SubjectLocator:
 
 
 def _motion_center(prev: np.ndarray, curr: np.ndarray) -> float | None:
-    """Schwerpunkt der Bewegung als Rueckfallebene, wenn kein Gesicht sichtbar ist."""
+    """Motion centroid as a fallback when no face is visible."""
     diff = cv2.absdiff(prev, curr)
     diff = cv2.GaussianBlur(diff, (21, 21), 0)
     _, mask = cv2.threshold(diff, 18, 255, cv2.THRESH_BINARY)
@@ -107,19 +106,19 @@ def analyze(
     shots: list[Shot],
     cfg: dict,
 ) -> list[CropKeyframe]:
-    """Ermittelt fuer den Zeitbereich [start, end) je Shot ein Crop-Fenster."""
+    """Determine one crop window per shot for the range [start, end)."""
     rf = cfg["reframe"]
     target_w, target_h = rf["target_width"], rf["target_height"]
     sample_fps = rf["sample_fps"]
 
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
-        raise RuntimeError(f"Konnte {video_path} nicht oeffnen")
+        raise RuntimeError(f"Could not open {video_path}")
 
     src_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     src_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    # Groesstmoegliches 9:16-Fenster, das noch ins Quellbild passt.
+    # Largest possible 9:16 window that still fits inside the source frame.
     crop_h = src_h
     crop_w = int(round(crop_h * target_w / target_h))
     if crop_w > src_w:
@@ -134,17 +133,17 @@ def analyze(
 
     locator = SubjectLocator(src_w, src_h, min_weight=rf.get("min_face_weight", 0.001))
 
-    # Shots auf das Clipfenster beschneiden.
+    # Clip the shot list down to the clip window.
     local_shots = [s for s in shots if s.end > start and s.start < end]
     if not local_shots:
         local_shots = [Shot(index=0, start=start, end=end)]
     shot_starts = [max(s.start, start) for s in local_shots]
 
-    # Ein einziger Seek an den Clipanfang, danach sequenziell durchdekodieren.
-    # Frueher wurde pro Sample-Frame neu positioniert - jeder dieser Seeks
-    # zwingt den Decoder zurueck auf den letzten Keyframe und kostete rund
-    # 0,6 s. Sequenziell greifen (grab) und nur an den Sample-Punkten
-    # dekodieren (retrieve) ist um Groessenordnungen schneller.
+    # One single seek to the clip start, then decode sequentially. An earlier
+    # version repositioned for every sampled frame - each of those seeks forces
+    # the decoder back to the previous keyframe and cost around 0.6 s. Grabbing
+    # sequentially (grab) and only decoding at the sample points (retrieve) is
+    # orders of magnitude faster.
     cap.set(cv2.CAP_PROP_POS_MSEC, start * 1000.0)
 
     faces_per_shot: list[list[tuple[float, float]]] = [[] for _ in local_shots]
@@ -175,8 +174,8 @@ def analyze(
         faces_per_shot[idx].extend(locator.faces(frame))
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        # Bewegung nur innerhalb desselben Shots vergleichen - ueber einen
-        # Schnitt hinweg ist das Differenzbild bedeutungslos.
+        # Only compare motion within the same shot - across a cut the frame
+        # difference is meaningless.
         if prev_gray is not None and prev_shot == idx:
             mc = _motion_center(prev_gray, gray)
             if mc is not None:
@@ -195,8 +194,8 @@ def analyze(
         elif motion_per_shot[i]:
             cx_norm = float(np.median(motion_per_shot[i]))
         elif keyframes:
-            # Kein Signal: die Position des vorigen Shots halten statt auf die
-            # Bildmitte zu springen - das vermeidet einen sichtbaren Ruck.
+            # No signal: hold the previous shot's position instead of jumping to
+            # the frame centre - that avoids a visible lurch.
             cx_norm = (keyframes[-1].x + crop_w / 2.0) / src_w
         else:
             cx_norm = 0.5
@@ -219,11 +218,11 @@ def analyze(
 
 
 def _dedupe(keyframes: list[CropKeyframe]) -> list[CropKeyframe]:
-    """Entfernt Keyframes mit identischem Zeitpunkt.
+    """Remove keyframes that share the same timestamp.
 
-    Reicht ein Shot ueber den Clipanfang hinaus, faellt sein auf den Clip
-    bezogener Start mit dem des Folge-Shots auf 0 zusammen. Im Crop-Ausdruck
-    waere der erste davon toter Code.
+    If a shot extends past the clip start, its clip-relative start collapses to
+    0 together with the following shot's. In the crop expression the first of
+    those would be dead code.
     """
     out: list[CropKeyframe] = []
     for kf in sorted(keyframes, key=lambda k: k.t):
@@ -235,11 +234,10 @@ def _dedupe(keyframes: list[CropKeyframe]) -> list[CropKeyframe]:
 
 
 def _smooth(keyframes: list[CropKeyframe], max_jump: int) -> list[CropKeyframe]:
-    """Kleine Sprünge zwischen aufeinanderfolgenden Shots einebnen.
+    """Smooth out small jumps between consecutive shots.
 
-    Wenn zwei benachbarte Shots fast dieselbe Motivposition haben, wirkt ein
-    minimaler Versatz wie ein Wackler. Unterhalb der Schwelle wird der vorherige
-    Wert uebernommen.
+    When two neighbouring shots have almost the same subject position, a tiny
+    offset reads as a wobble. Below the threshold the previous value is kept.
     """
     for i in range(1, len(keyframes)):
         if abs(keyframes[i].x - keyframes[i - 1].x) < max_jump:

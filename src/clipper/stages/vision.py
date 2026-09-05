@@ -1,9 +1,9 @@
-"""Keyframes fuer das visuelle Verstaendnis.
+"""Keyframes for visual understanding.
 
-Der Grund fuer diese Stufe: Bei Talking-Head-Podcasts steht im Transkript, wo
-der gute Moment ist. Bei Challenge- und Reaction-Content steht er da nicht -
-"oh my god" sagt nichts darueber aus, ob gerade ein Auto explodiert oder jemand
-eine Tuer oeffnet. Ohne Bilder waehlt das Modell hier blind.
+Why this stage exists: in talking-head podcasts the transcript tells you where
+the good moment is. In challenge and reaction content it does not - "oh my god"
+says nothing about whether a car just exploded or someone opened a door.
+Without images the model is picking blind here.
 """
 
 from __future__ import annotations
@@ -22,10 +22,10 @@ def pick_keyframe_times(
     peaks: list[EnergyPeak],
     n_frames: int,
 ) -> list[float]:
-    """Mischung aus Energie-Spitzen und gleichmaessiger Abdeckung.
+    """A mix of energy peaks and even coverage.
 
-    Reine Peak-Auswahl verpasst ruhige Setup-Momente, reines Raster verpasst
-    die Hoehepunkte. Deshalb 60/40.
+    Pure peak selection misses quiet setup moments, a pure grid misses the
+    payoffs. Hence 60/40.
     """
     if n_frames <= 0 or duration <= 0:
         return []
@@ -39,7 +39,7 @@ def pick_keyframe_times(
     if n_grid > 0:
         times += list(np.linspace(duration * 0.02, duration * 0.98, n_grid))
 
-    # Doppelte in engem Abstand entfernen, damit keine Tokens verschwendet werden.
+    # Drop near-duplicates so we do not waste tokens on them.
     times.sort()
     deduped: list[float] = []
     min_gap = max(duration / (n_frames * 3), 1.0)
@@ -55,7 +55,7 @@ def extract_keyframes(
     out_dir: Path,
     width: int = 512,
 ) -> list[tuple[float, Path]]:
-    """Schreibt je ein JPEG pro Zeitpunkt. -ss vor -i = schneller Seek."""
+    """Write one JPEG per timestamp. -ss before -i means a fast seek."""
     out_dir.mkdir(parents=True, exist_ok=True)
     frames: list[tuple[float, Path]] = []
 

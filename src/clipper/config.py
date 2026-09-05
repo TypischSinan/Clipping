@@ -1,4 +1,4 @@
-"""Konfiguration laden und mergen."""
+"""Load and merge configuration."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 
 
 def load_config(path: Path | None = None, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Laedt default.yaml, merged optional eine eigene Datei und dann CLI-Overrides."""
+    """Load default.yaml, optionally merge a custom file, then CLI overrides."""
     with DEFAULT_CONFIG.open("r", encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh)
 

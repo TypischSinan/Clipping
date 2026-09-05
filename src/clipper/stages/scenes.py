@@ -1,5 +1,5 @@
-"""Stufe 3: Shot-Erkennung. Clips duerfen nie mitten in einem Shot anfangen -
-ein Schnitt auf der Grenze wirkt gewollt, ein Schnitt mittendrin wie ein Fehler."""
+"""Stage 3: shot detection. A clip must never start mid-shot - a cut on a shot
+boundary looks intentional, a cut in the middle looks like a mistake."""
 
 from __future__ import annotations
 
@@ -39,12 +39,11 @@ def shot_boundaries(shots: list[Shot]) -> list[float]:
 
 
 def snap_to_shots(t: float, shots: list[Shot], *, edge: str, max_drift: float = 1.5) -> float:
-    """Zieht einen Zeitpunkt auf eine Shot-Grenze.
+    """Snap a timestamp onto a shot boundary.
 
-    Die Richtung ist nicht symmetrisch: ein Clipanfang wird bevorzugt auf die
-    Grenze davor gezogen und ein Clipende auf die danach. Zoege man immer auf
-    die absolut naechste Grenze, schnitte man bei knappen Faellen die erste
-    beziehungsweise letzte Silbe des Moments ab.
+    The direction is deliberately asymmetric: a clip start prefers the boundary
+    before it, a clip end the one after. Always snapping to the nearest boundary
+    would clip the first or last syllable of the moment in close cases.
     """
     boundaries = shot_boundaries(shots)
     if not boundaries:
@@ -71,27 +70,25 @@ def snap_end_within(
     max_duration: float,
     hard_max: float | None = None,
 ) -> float:
-    """Waehlt das Clipende so, dass es sowohl auf einer Shot-Grenze liegt als
-    auch die Laengenvorgabe einhaelt.
+    """Pick a clip end that sits on a shot boundary *and* honours the length range.
 
-    Fruehere Fassung hat erst gesnappt und danach hart auf min/max korrigiert -
-    damit landete das Ende wieder mitten in einer Einstellung und das Snapping
-    war wirkungslos. Hier wird nur unter den Grenzen gesucht, die im erlaubten
-    Fenster liegen.
+    An earlier version snapped first and then clamped to min/max - which put the
+    end back in the middle of a shot and made the snapping pointless. Here we
+    only search among boundaries that already fall inside the allowed window.
     """
     lo, hi = start + min_duration, start + max_duration
-    # `hard_max` ist die Kante des freien Fensters, etwa der Anfang des naechsten
-    # bereits vergebenen Clips. Darueber hinaus zu schneiden waere eine
-    # Ueberlappung, egal was die Laengenvorgabe erlaubt.
+    # `hard_max` is the edge of the free window, e.g. the start of the next
+    # already-placed clip. Cutting past it would overlap, no matter what the
+    # length range allows.
     if hard_max is not None:
         hi = min(hi, hard_max)
     boundaries = shot_boundaries(shots)
     usable = [b for b in boundaries if lo <= b <= hi]
     if usable:
         return min(usable, key=lambda b: abs(b - desired_end))
-    # Keine Schnittgrenze im erlaubten Fenster: harter Schnitt, so nah wie
-    # moeglich am gewuenschten Ende - aber nie ueber das Material hinaus.
-    # Ohne diese Deckelung entstehen Clips, die hinter dem Videoende liegen;
-    # ffmpeg liefert dann eine zu kurze oder leere Datei.
+    # No shot boundary inside the allowed window: hard cut, as close to the
+    # desired end as possible - but never past the end of the material. Without
+    # this cap you get clips beyond the end of the video, and ffmpeg then writes
+    # a truncated or empty file.
     end = max(lo, min(hi, desired_end))
     return min(end, boundaries[-1]) if boundaries else end

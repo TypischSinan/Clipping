@@ -1,7 +1,7 @@
-"""Stufe 8: Rendern.
+"""Stage 8: rendering.
 
-Ein einziger ffmpeg-Aufruf pro Clip: schneiden, croppen, skalieren, Untertitel
-einbrennen, Lautheit normalisieren, encoden.
+One single ffmpeg call per clip: trim, crop, scale, burn in captions, normalise
+loudness, encode.
 """
 
 from __future__ import annotations
@@ -14,26 +14,26 @@ from ..utils.ffmpeg import pick_encoder, run
 
 
 def _crop_x_expr(plan: ClipPlan) -> str:
-    """Baut aus den Crop-Keyframes einen stueckweisen ffmpeg-Ausdruck ueber t.
+    """Build a piecewise ffmpeg expression over t from the crop keyframes.
 
-    Ergebnis der Form: if(lt(t,2.5),100,if(lt(t,7.0),240,310))
+    Result looks like: if(lt(t,2.5),100,if(lt(t,7.0),240,310))
     """
     crops = sorted(plan.crops, key=lambda c: c.t)
     if len(crops) == 1:
         return str(crops[0].x)
 
-    # Von hinten nach vorn verschachteln, damit der erste Vergleich aussen steht.
+    # Nest from the back so the first comparison ends up outermost.
     expr = str(crops[-1].x)
     for i in range(len(crops) - 2, -1, -1):
         expr = f"if(lt(t,{crops[i + 1].t:.3f}),{crops[i].x},{expr})"
     return expr
 
 
-# Absichtlich kein Pfad-Escaping: der subtitles-Filter interpretiert den
-# Doppelpunkt eines Windows-Laufwerksbuchstabens als Options-Trenner, und die
-# noetige Maskierung unterscheidet sich je nach ffmpeg-Version und Shell.
-# Stattdessen laeuft ffmpeg mit cwd = Verzeichnis der ASS-Datei und bekommt
-# nur den Dateinamen - dann gibt es gar keinen Doppelpunkt zu escapen.
+# Deliberately no path escaping: the subtitles filter reads the colon of a
+# Windows drive letter as an option separator, and the escaping required for
+# that differs between ffmpeg versions and shells. Instead ffmpeg runs with
+# cwd = the ASS file's directory and receives only the filename - then there is
+# no colon to escape in the first place.
 
 
 def render_clip(
@@ -63,7 +63,7 @@ def render_clip(
 
     args = [
         "ffmpeg", "-v", "error", "-y",
-        # -ss vor -i: schneller Seek. -copyts entfaellt, Zeiten starten bei 0.
+        # -ss before -i: fast seek. No -copyts, so timestamps start at 0.
         "-ss", f"{cand.start:.3f}",
         "-t", f"{cand.duration:.3f}",
         "-i", str(source_path),
@@ -71,7 +71,7 @@ def render_clip(
     ]
 
     if rc["loudnorm"]:
-        # -14 LUFS ist der Zielwert, auf den TikTok ohnehin normalisiert.
+        # -14 LUFS is the target TikTok normalises to anyway.
         args += ["-af", "loudnorm=I=-14:TP=-1.5:LRA=11"]
 
     if encoder.endswith("_nvenc"):

@@ -1,7 +1,7 @@
-"""Tests fuer die Stellen, an denen die Pipeline still falsch laufen kann.
+"""Tests for the places where the pipeline can go quietly wrong.
 
-Schwerpunkt liegt auf Schnittgrenzen und Untertitel-Layout - dort faellt ein
-Fehler im Ergebnis erst beim Ansehen auf, nicht als Exception.
+The focus is on cut boundaries and caption layout - that is where a bug only
+shows up when you watch the result, not as an exception.
 """
 
 from __future__ import annotations
@@ -33,10 +33,10 @@ def shots(*bounds: float) -> list[Shot]:
     ]
 
 
-# --- Schnittgrenzen ---------------------------------------------------------
+# --- Cut boundaries ---------------------------------------------------------
 
 def test_snap_start_prefers_boundary_before():
-    """Ein Clipanfang darf nicht nach hinten rutschen - sonst fehlt die erste Silbe."""
+    """A clip start must not drift later - otherwise the first syllable is gone."""
     s = shots(0.0, 10.0, 20.0, 30.0)
     assert snap_to_shots(10.4, s, edge="start") == 10.0
 
@@ -48,21 +48,21 @@ def test_snap_end_prefers_boundary_after():
 
 def test_snap_falls_back_to_nearest_when_out_of_drift():
     s = shots(0.0, 10.0, 20.0)
-    # 15.0 ist von beiden Grenzen 5s entfernt, also ausserhalb max_drift.
+    # 15.0 is 5s from either boundary, i.e. outside max_drift.
     assert snap_to_shots(15.0, s, edge="start", max_drift=1.5) == 15.0
 
 
 def test_snap_end_within_stays_on_boundary_and_in_range():
-    """Der Kernfall des frueheren Bugs: Laengenkorrektur darf das Snapping
-    nicht zerstoeren."""
+    """The core case of the earlier bug: length correction must not destroy
+    the snapping."""
     s = shots(0.0, 5.0, 12.0, 18.0, 40.0)
     end = snap_end_within(0.0, 6.0, s, min_duration=15.0, max_duration=30.0)
-    assert end == 18.0          # einzige Grenze in [15, 30]
+    assert end == 18.0          # the only boundary in [15, 30]
     assert 15.0 <= end <= 30.0
 
 
 def test_snap_end_within_without_usable_boundary():
-    """Ohne Schnittgrenze im erlaubten Fenster bleibt nur der harte Schnitt."""
+    """With no cut boundary in the allowed window only a hard cut remains."""
     s = shots(0.0, 2.0, 100.0)
     end = snap_end_within(0.0, 20.0, s, min_duration=15.0, max_duration=30.0)
     assert 15.0 <= end <= 30.0
@@ -71,16 +71,16 @@ def test_snap_end_within_without_usable_boundary():
 def test_finalize_never_leaves_the_length_window(cfg):
     cfg["select"].update(clips=5, min_duration=15.0, max_duration=30.0)
     s = shots(0.0, 5.0, 12.0, 18.0, 26.0, 60.0)
-    # Zu kurzer Vorschlag - frueher wurde blind auf min_duration verlaengert.
+    # Proposal too short - this used to be blindly extended to min_duration.
     out = _finalize([Candidate(start=0.0, end=6.0, title="x", score=90)], s, cfg)
     assert len(out) == 1
     assert 15.0 <= out[0].duration <= 30.0
 
 
 def test_finalize_output_is_never_overlapping(cfg):
-    """Die Zusicherung ist ueberlappungsfreie Ausgabe - nicht, dass ein
-    kollidierender Clip wegfaellt. Passt er verschoben in die Luecke, wird er
-    behalten; der hoeher bewertete behaelt seine Wunschposition."""
+    """The guarantee is non-overlapping output - not that a colliding clip is
+    dropped. If it fits into the gap when shifted, it is kept; the higher-scored
+    clip keeps its preferred position."""
     cfg["select"].update(clips=5, min_duration=5.0, max_duration=30.0)
     s = shots(0.0, 10.0, 20.0, 30.0)
     out = _finalize(
@@ -97,7 +97,7 @@ def test_finalize_output_is_never_overlapping(cfg):
 
 
 def test_finalize_drops_a_clip_with_no_room_left(cfg):
-    """Ohne ausreichende Luecke faellt der schwaechere Clip weiterhin weg."""
+    """Without a large enough gap the weaker clip is still dropped."""
     cfg["select"].update(clips=5, min_score=0, min_duration=20.0, max_duration=30.0)
     s = shots(0.0, 10.0, 20.0, 30.0)
     out = _finalize(
@@ -111,7 +111,7 @@ def test_finalize_drops_a_clip_with_no_room_left(cfg):
     assert [c.title for c in out] == ["a"]
 
 
-# --- Wortgrenzen ------------------------------------------------------------
+# --- Word boundaries --------------------------------------------------------
 
 def test_avoid_word_split_pulls_start_back():
     words = [Word(start=10.0, end=10.6, text="HELLO")]
@@ -124,7 +124,7 @@ def test_avoid_word_split_pushes_end_forward():
 
 
 def test_avoid_word_split_respects_max_drift():
-    """Ein sehr langes Wort darf den Schnitt nicht beliebig weit verschieben."""
+    """A very long word must not shift the cut arbitrarily far."""
     words = [Word(start=10.0, end=14.0, text="AAAA")]
     assert _avoid_word_split(12.0, words, edge="start", max_drift=0.4) == 12.0
 
@@ -134,7 +134,7 @@ def test_avoid_word_split_ignores_gaps():
     assert _avoid_word_split(10.75, words, edge="start") == 10.75
 
 
-# --- Untertitel -------------------------------------------------------------
+# --- Captions ---------------------------------------------------------------
 
 def words_from(text: str, start: float = 0.0, step: float = 0.4) -> list[Word]:
     return [
@@ -148,7 +148,7 @@ def test_block_breaks_on_speech_pause(cfg):
     ws = [
         Word(start=0.0, end=0.4, text="EINS"),
         Word(start=0.4, end=0.8, text="ZWEI"),
-        Word(start=3.0, end=3.4, text="DREI"),   # 2.2s Pause davor
+        Word(start=3.0, end=3.4, text="DREI"),   # 2.2s pause before it
     ]
     blocks = _blocks(ws, cfg)
     assert len(blocks) == 2
@@ -166,10 +166,10 @@ def test_block_respects_line_and_block_capacity(cfg):
 
 def test_render_block_highlights_only_the_active_word(cfg):
     cfg["captions"].update(pop=False)
-    ws = words_from("DAS IST DAS")   # "DAS" kommt doppelt vor
+    ws = words_from("DAS IST DAS")   # "DAS" appears twice
     lines = [ws]
     out = _render_block(lines, ws[2], cfg)
-    # Nur eine Hervorhebung, obwohl der Text identisch ist -> Identitaet, nicht Gleichheit
+    # Only one highlight although the text is identical -> identity, not equality
     assert out.count(cfg["captions"]["highlight_color"]) == 1
 
 
@@ -186,7 +186,7 @@ def test_wrap_does_not_break_words():
         assert len(line) <= 9
 
 
-# --- Crop-Ausdruck ----------------------------------------------------------
+# --- Crop expression --------------------------------------------------------
 
 def test_crop_expr_single_keyframe():
     plan = ClipPlan(
@@ -198,7 +198,7 @@ def test_crop_expr_single_keyframe():
 
 
 def test_crop_expr_nests_in_chronological_order():
-    """Gleiche x-Werte duerfen die Reihenfolge nicht durcheinanderbringen."""
+    """Equal x values must not scramble the ordering."""
     plan = ClipPlan(
         index=1,
         candidate=Candidate(start=0, end=10, title="x"),
@@ -212,7 +212,7 @@ def test_crop_expr_nests_in_chronological_order():
     assert expr == "if(lt(t,2.000),100,if(lt(t,4.000),200,100))"
 
 
-# --- Abschnitts-Download ----------------------------------------------------
+# --- Section download -------------------------------------------------------
 
 def test_parse_section_plain_seconds():
     from clipper.stages.ingest import parse_section
@@ -231,7 +231,7 @@ def test_parse_section_requires_range():
         parse_section("120")
 
 
-# --- Wortzahl pro Block -----------------------------------------------------
+# --- Words per block --------------------------------------------------------
 
 def test_block_respects_max_words(cfg):
     cfg["captions"].update(max_words=4, max_chars_per_line=99, max_lines=2, max_gap=99.0)
@@ -241,7 +241,7 @@ def test_block_respects_max_words(cfg):
 
 
 def test_max_words_wins_over_char_capacity(cfg):
-    """Kurze Woerter duerfen sich nicht ueber die Wortgrenze hinaus stapeln."""
+    """Short words must not stack up beyond the word limit."""
     cfg["captions"].update(max_words=3, max_chars_per_line=99, max_lines=2, max_gap=99.0)
     blocks = _blocks(words_from("A B C D E F"), cfg)
     assert len(blocks) == 2
@@ -257,12 +257,12 @@ def test_max_words_zero_disables_the_limit(cfg):
 def test_language_prompt_names_the_target(cfg):
     from clipper.stages.select import system_prompt
     cfg["select"]["output_language"] = "en"
-    assert "Englisch" in system_prompt(cfg)
+    assert "English" in system_prompt(cfg)
     cfg["select"]["output_language"] = "es"
-    assert "Spanisch" in system_prompt(cfg)
+    assert "Spanish" in system_prompt(cfg)
 
 
-# --- Unbegrenzte Clipzahl ---------------------------------------------------
+# --- Unlimited clip count ---------------------------------------------------
 
 def test_finalize_unlimited_returns_all_surviving(cfg):
     cfg["select"].update(clips=0, min_score=0, min_duration=5.0, max_duration=15.0)
@@ -270,7 +270,7 @@ def test_finalize_unlimited_returns_all_surviving(cfg):
     cands = [Candidate(start=float(a), end=float(a + 10), title=f"c{a}", score=50)
              for a in range(0, 120, 20)]
     out = _finalize(cands, s, cfg)
-    assert len(out) == 6          # keine Deckelung auf 8 oder aehnliches
+    assert len(out) == 6          # no cap at 8 or similar
 
 
 def test_finalize_limit_still_caps_when_set(cfg):
@@ -297,7 +297,7 @@ def test_finalize_drops_below_min_score(cfg):
 
 
 def test_finalize_returns_chronological_order(cfg):
-    """Nach Score sortiert wird nur intern - ausgegeben wird nach Zeit."""
+    """Sorting by score is internal only - output is ordered by time."""
     cfg["select"].update(clips=0, min_score=0, min_duration=5.0, max_duration=15.0)
     s = shots(0.0, 10.0, 20.0, 30.0, 40.0, 50.0)
     out = _finalize(
@@ -312,15 +312,15 @@ def test_finalize_returns_chronological_order(cfg):
 
 
 def test_finalize_retries_forward_when_backward_snap_collides(cfg):
-    """Zwei direkt aufeinanderfolgende Momente duerfen sich nicht gegenseitig
-    ausschliessen, nur weil der Start rueckwaerts auf den Vorgaenger snappt."""
+    """Two directly consecutive moments must not exclude each other just
+    because the start snaps backwards onto the previous clip."""
     cfg["select"].update(clips=0, min_score=0, min_duration=10.0, max_duration=25.0)
     s = shots(0.0, 12.0, 24.0, 36.0, 48.0, 60.0)
     out = _finalize(
         [
             Candidate(start=0.0, end=24.0, title="erster", score=90),
-            # Startet knapp nach dem Ende des ersten - rueckwaerts gesnappt
-            # landet er bei 24.0 und ragt hinein.
+            # Starts just after the first one ends - snapped backwards it
+            # lands at 24.0 and runs into it.
             Candidate(start=24.5, end=48.0, title="zweiter", score=80),
         ],
         s,
@@ -337,8 +337,8 @@ def test_snap_end_within_respects_hard_max():
 
 
 def test_finalize_fits_a_clip_into_the_remaining_gap(cfg):
-    """Ein Moment zwischen zwei vergebenen Clips darf nicht wegfallen,
-    solange die Luecke noch min_duration hergibt."""
+    """A moment between two placed clips must not be dropped while the gap
+    still allows min_duration."""
     cfg["select"].update(clips=0, min_score=0, min_duration=10.0, max_duration=40.0)
     s = shots(0.0, 15.0, 30.0, 45.0, 60.0, 75.0)
     out = _finalize(
@@ -356,8 +356,8 @@ def test_finalize_fits_a_clip_into_the_remaining_gap(cfg):
 
 
 def test_snap_end_never_exceeds_the_material():
-    """Der Fallback darf kein Ende hinter der letzten Shot-Grenze liefern -
-    sonst entstehen Clips, die ueber das Videoende hinausragen."""
+    """The fallback must not return an end past the last shot boundary -
+    otherwise clips extend beyond the end of the video."""
     s = shots(0.0, 10.0, 20.0, 30.0)
     end = snap_end_within(28.0, 60.0, s, min_duration=20.0, max_duration=30.0)
     assert end <= 30.0

@@ -1,11 +1,11 @@
-"""Stufe 7: Untertitel und Hook-Overlay als ASS-Datei.
+"""Stage 7: captions and hook overlay as an ASS file.
 
-Karaoke-Stil (aktives Wort farbig und kurz vergroessert) statt Blocktext: die
-Wort-fuer-Wort-Betonung fuehrt den Blick mit dem Ton mit.
+Karaoke style (active word coloured and briefly scaled up) rather than block
+text: the word-by-word emphasis pulls the eye along with the audio.
 
-Der Hook liegt bewusst in derselben ASS-Datei statt in einem drawtext-Filter -
-das erspart das Escaping von Sonderzeichen im Filtergraph und haelt die
-Typografie beider Elemente an einer Stelle.
+The hook deliberately lives in the same ASS file instead of a drawtext filter -
+that avoids escaping special characters in the filtergraph and keeps the
+typography of both elements in one place.
 """
 
 from __future__ import annotations
@@ -15,14 +15,13 @@ from pathlib import Path
 
 from ..models import Segment, Word
 
-# Satzzeichen, die am Wortende entfernt werden. Das Komma bleibt bewusst drin,
-# wenn es mitten im Satz steht - entfernt wird nur, was am Zeilenende ohnehin
-# keine Lesehilfe mehr ist.
+# Punctuation stripped from the end of a word. A mid-sentence comma is kept on
+# purpose; only what stops being a reading aid at the end of a line is removed.
 _TRAILING_PUNCT = re.compile(r"[.,!?;:]+$")
 
 
 def _fmt_time(seconds: float) -> str:
-    """ASS-Zeitformat: H:MM:SS.cc"""
+    """ASS time format: H:MM:SS.cc"""
     seconds = max(0.0, seconds)
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
@@ -52,15 +51,15 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 def _escape(text: str) -> str:
-    """Zeichen entfernen, die ASS als Override-Block interpretieren wuerde."""
+    """Strip characters ASS would read as an override block."""
     return text.replace("\\", "").replace("{", "").replace("}", "")
 
 
 def _wrap(text: str, max_chars: int, max_lines: int | None = None) -> str:
-    """Bricht Text mit \\N um, ohne Woerter zu zerreissen.
+    """Wrap text with \\N without breaking words apart.
 
-    Ueberzaehlige Zeilen werden verworfen und die letzte mit einer Ellipse
-    beendet - abgeschnitten wird immer an einer Wortgrenze, nie mitten im Wort.
+    Surplus lines are dropped and the last one gets an ellipsis - truncation
+    always happens on a word boundary, never mid-word.
     """
     words = text.split()
     lines: list[str] = []
@@ -86,11 +85,11 @@ def _wrap(text: str, max_chars: int, max_lines: int | None = None) -> str:
 
 
 def _blocks(words: list[Word], cfg: dict) -> list[list[list[Word]]]:
-    """Gruppiert Woerter zu Bloecken, jeder Block als Liste von Zeilen.
+    """Group words into blocks, each block a list of lines.
 
-    Zwei Abbruchgruende: der Block hat max_lines Zeilen voll, oder vor dem
-    naechsten Wort liegt eine Sprechpause. Ohne die Pausenpruefung bliebe eine
-    Zeile waehrend einer langen Pause tot im Bild stehen.
+    Two reasons to break: the block has max_lines full lines, or a speech pause
+    precedes the next word. Without the pause check a line would sit dead on
+    screen through a long silence.
     """
     cp = cfg["captions"]
     per_line = cp["max_chars_per_line"]
@@ -98,10 +97,10 @@ def _blocks(words: list[Word], cfg: dict) -> list[list[list[Word]]]:
     max_words = cp.get("max_words", 4)
     max_gap = cp.get("max_gap", 0.6)
 
-    # Der Umbruch entsteht beim Gruppieren, nicht danach. Ueber eine reine
-    # Zeichenkapazitaet (per_line * max_lines) zu gehen waere falsch: greedy
-    # umgebrochene Zeilen lassen am Ende Platz liegen, sodass ein Block dann
-    # doch mehr Zeilen braucht als erlaubt.
+    # Wrapping happens while grouping, not afterwards. Going by a plain
+    # character capacity (per_line * max_lines) would be wrong: greedily wrapped
+    # lines leave slack at the end of each line, so a block would then need more
+    # lines than allowed.
     blocks: list[list[list[Word]]] = []
     lines: list[list[Word]] = []
     line: list[Word] = []
@@ -110,8 +109,8 @@ def _blocks(words: list[Word], cfg: dict) -> list[list[list[Word]]]:
         return len(" ".join(w.text for w in candidate))
 
     for i, word in enumerate(words):
-        # Wortzahl ist die fuehrende Grenze: sie bestimmt, wie viel gleichzeitig
-        # im Bild steht. Die Zeichenbreite bleibt als reiner Ueberlaufschutz.
+        # Word count is the leading constraint: it decides how much is on screen
+        # at once. Character width stays purely as an overflow guard.
         if max_words and sum(len(ln) for ln in lines) + len(line) >= max_words:
             if line:
                 lines.append(line)
@@ -143,7 +142,7 @@ def _blocks(words: list[Word], cfg: dict) -> list[list[list[Word]]]:
 
 
 def _render_block(lines: list[list[Word]], active: Word, cfg: dict) -> str:
-    """Baut den Text eines Events: ganzer Block, aktives Wort hervorgehoben."""
+    """Build one event's text: the whole block, active word highlighted."""
     cp = cfg["captions"]
     highlight = cp["highlight_color"]
     pop = cp.get("pop", True)
@@ -155,8 +154,8 @@ def _render_block(lines: list[list[Word]], active: Word, cfg: dict) -> str:
             text = _escape(word.text)
             if word is active:
                 if pop:
-                    # Kurz groesser einsetzen und auf Normalgroesse zuruecklaufen.
-                    # Die Zeit ist relativ zum Event-Start, also zum Wortanfang.
+                    # Enter slightly larger and scale back to normal. The timing
+                    # is relative to the event start, i.e. to the word onset.
                     tags = (
                         f"\\c{highlight}&\\fscx112\\fscy112"
                         f"\\t(0,110,\\fscx100\\fscy100)"
@@ -178,7 +177,7 @@ def build_ass(
     cfg: dict,
     hook: str = "",
 ) -> Path:
-    """Erzeugt eine ASS-Datei fuer das Zeitfenster [start, end), Zeiten ab 0."""
+    """Build an ASS file for the window [start, end), with times starting at 0."""
     cp = cfg["captions"]
     strip = cp.get("strip_punctuation", True)
 
@@ -202,7 +201,7 @@ def build_ass(
 
     out: list[str] = [_header(cfg)]
 
-    # --- Hook-Overlay ------------------------------------------------------
+    # --- Hook overlay ------------------------------------------------------
     hk = cp.get("hook", {})
     if hook and hk.get("enabled", True):
         duration = min(float(hk.get("duration", 2.0)), end - start)
@@ -216,7 +215,7 @@ def build_ass(
             f"{{\\fad(120,220)}}{body}"
         )
 
-    # --- Untertitel --------------------------------------------------------
+    # --- Captions ----------------------------------------------------------
     for lines in _blocks(words, cfg):
         flat = [w for line in lines for w in line]
         if not flat:

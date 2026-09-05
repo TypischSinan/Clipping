@@ -1,4 +1,4 @@
-"""Kommandozeile."""
+"""Command line interface."""
 
 from __future__ import annotations
 
@@ -19,23 +19,22 @@ from .models import ClipPlan
 from .pipeline import run_pipeline
 from .utils.cache import read_json
 
-# Die Windows-Konsole laeuft per Default auf cp1252 und wirft bei jedem Emoji
-# einen UnicodeEncodeError. TikTok-Captions bestehen praktisch immer aus Text
-# plus Emoji, also wird die Ausgabe hart auf UTF-8 gestellt. 'replace' sorgt
-# dafuer, dass eine alte Konsole hoechstens Ersatzzeichen zeigt statt
-# abzustuerzen.
+# The Windows console defaults to cp1252 and raises UnicodeEncodeError on any
+# emoji. TikTok captions are basically always text plus emoji, so output is
+# forced to UTF-8. 'replace' means an old console shows replacement characters
+# at worst instead of crashing.
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, ValueError):
         pass
 
-app = typer.Typer(add_completion=False, help="YouTube-Longform zu vertikalen Clips.")
+app = typer.Typer(add_completion=False, help="Turn long-form YouTube videos into vertical clips.")
 console = Console()
 
 
 def _overrides(**kwargs: Any) -> dict:
-    """Baut den Override-Dict aus den gesetzten CLI-Flags."""
+    """Build the override dict from the CLI flags that were set."""
     mapping = {
         "clips": ("select", "clips"),
         "min_duration": ("select", "min_duration"),
@@ -54,12 +53,12 @@ def _overrides(**kwargs: Any) -> dict:
 
 
 def _print_table(plans: list[ClipPlan]) -> None:
-    table = Table(title="Fertige Clips", show_lines=False)
+    table = Table(title="Finished clips", show_lines=False)
     table.add_column("#", justify="right", style="cyan")
     table.add_column("Score", justify="right")
-    table.add_column("Laenge", justify="right")
+    table.add_column("Length", justify="right")
     table.add_column("Hook")
-    table.add_column("Datei", style="dim")
+    table.add_column("File", style="dim")
 
     for plan in plans:
         cand = plan.candidate
@@ -72,31 +71,31 @@ def _print_table(plans: list[ClipPlan]) -> None:
         )
     console.print(table)
     if plans and plans[0].out_path:
-        console.print(f"\nAusgabe: [bold]{Path(plans[0].out_path).parent}[/bold]")
+        console.print(f"\nOutput: [bold]{Path(plans[0].out_path).parent}[/bold]")
 
 
 @app.command()
 def run(
-    url: str = typer.Argument(..., help="YouTube-URL"),
-    clips: Optional[int] = typer.Option(None, "--clips", "-n", help="Anzahl Clips"),
-    min_duration: Optional[float] = typer.Option(None, "--min", help="Mindestlaenge in s"),
-    max_duration: Optional[float] = typer.Option(None, "--max", help="Maximallaenge in s"),
-    language: Optional[str] = typer.Option(None, "--lang", help="Sprache, z.B. en oder de"),
-    whisper_model: Optional[str] = typer.Option(None, "--whisper", help="Whisper-Modell"),
+    url: str = typer.Argument(..., help="YouTube URL"),
+    clips: Optional[int] = typer.Option(None, "--clips", "-n", help="Number of clips"),
+    min_duration: Optional[float] = typer.Option(None, "--min", help="Minimum length in seconds"),
+    max_duration: Optional[float] = typer.Option(None, "--max", help="Maximum length in seconds"),
+    language: Optional[str] = typer.Option(None, "--lang", help="Language, e.g. en or de"),
+    whisper_model: Optional[str] = typer.Option(None, "--whisper", help="Whisper model"),
     vision_frames: Optional[int] = typer.Option(
-        None, "--vision", help="Keyframes fuer das Modell (0 = aus)"
+        None, "--vision", help="Keyframes sent to the model (0 = off)"
     ),
-    no_captions: bool = typer.Option(False, "--no-captions", help="Ohne Untertitel"),
+    no_captions: bool = typer.Option(False, "--no-captions", help="Without captions"),
     no_llm: bool = typer.Option(
-        False, "--no-llm", help="Heuristische Auswahl statt Claude (kein API-Key noetig)"
+        False, "--no-llm", help="Heuristic selection instead of Claude (no API key needed)"
     ),
     reselect: bool = typer.Option(
-        False, "--reselect", help="Nur die Auswahl neu rechnen, Cache sonst behalten"
+        False, "--reselect", help="Recompute only the selection, keep the rest of the cache"
     ),
-    force: bool = typer.Option(False, "--force", help="Alle Caches verwerfen"),
-    config: Optional[Path] = typer.Option(None, "--config", "-c", help="Eigene YAML"),
+    force: bool = typer.Option(False, "--force", help="Discard all caches"),
+    config: Optional[Path] = typer.Option(None, "--config", "-c", help="Custom YAML config"),
 ) -> None:
-    """Verarbeitet ein Video von der URL bis zu fertigen Clips."""
+    """Process a video from URL to finished clips."""
     overrides = _overrides(
         clips=clips, min_duration=min_duration, max_duration=max_duration,
         language=language, whisper_model=whisper_model, vision_frames=vision_frames,
@@ -108,8 +107,10 @@ def run(
     use_llm = not no_llm
     if use_llm and not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
         console.print(
-            "[yellow]Kein ANTHROPIC_API_KEY gesetzt - es laeuft die heuristische "
-            "Auswahl. Fuer die deutlich bessere LLM-Auswahl den Key setzen.[/yellow]"
+            "[yellow]No ANTHROPIC_API_KEY set - falling back to heuristic "
+            "selection.[/yellow]\n"
+            "[dim]Better without a key: run 'clipper analyze' and let a Claude "
+            "Code session do the selection.[/dim]"
         )
         use_llm = False
 
@@ -123,22 +124,22 @@ def run(
 
 @app.command()
 def analyze(
-    url: str = typer.Argument(..., help="YouTube-URL"),
-    clips: Optional[int] = typer.Option(None, "--clips", "-n", help="Anzahl Clips"),
-    min_duration: Optional[float] = typer.Option(None, "--min", help="Mindestlaenge in s"),
-    max_duration: Optional[float] = typer.Option(None, "--max", help="Maximallaenge in s"),
-    language: Optional[str] = typer.Option(None, "--lang", help="Sprache, z.B. en oder de"),
-    whisper_model: Optional[str] = typer.Option(None, "--whisper", help="Whisper-Modell"),
+    url: str = typer.Argument(..., help="YouTube URL"),
+    clips: Optional[int] = typer.Option(None, "--clips", "-n", help="Number of clips"),
+    min_duration: Optional[float] = typer.Option(None, "--min", help="Minimum length in seconds"),
+    max_duration: Optional[float] = typer.Option(None, "--max", help="Maximum length in seconds"),
+    language: Optional[str] = typer.Option(None, "--lang", help="Language, e.g. en or de"),
+    whisper_model: Optional[str] = typer.Option(None, "--whisper", help="Whisper model"),
     vision_frames: Optional[int] = typer.Option(
-        None, "--vision", help="Anzahl Keyframes fuer das Briefing"
+        None, "--vision", help="Number of keyframes for the briefing"
     ),
-    force: bool = typer.Option(False, "--force", help="Alle Caches verwerfen"),
-    config: Optional[Path] = typer.Option(None, "--config", "-c", help="Eigene YAML"),
+    force: bool = typer.Option(False, "--force", help="Discard all caches"),
+    config: Optional[Path] = typer.Option(None, "--config", "-c", help="Custom YAML config"),
 ) -> None:
-    """Stufen 1-4 plus Keyframes. Schreibt ein Briefing zur Momentauswahl.
+    """Stages 1-4 plus keyframes. Writes a briefing for moment selection.
 
-    Braucht keinen API-Key: das Briefing ist dafuer gedacht, von einer
-    Claude-Code-Session gelesen und beantwortet zu werden.
+    Needs no API key: the briefing is meant to be read and answered by a Claude
+    Code session.
     """
     cfg = load_config(config, _overrides(
         clips=clips, min_duration=min_duration, max_duration=max_duration,
@@ -149,12 +150,12 @@ def analyze(
     brief = pipeline.write_brief(analysis, cfg)
 
     console.print(
-        f"\n[bold green]Briefing fertig[/bold green]\n"
-        f"  Video-ID: [bold]{analysis.source.video_id}[/bold]\n"
+        f"\n[bold green]Briefing ready[/bold green]\n"
+        f"  Video ID: [bold]{analysis.source.video_id}[/bold]\n"
         f"  Briefing: [bold]{brief}[/bold]\n"
     )
     console.print(
-        "Naechster Schritt: Briefing lesen, Clips als JSON schreiben, dann\n"
+        "Next: read the briefing, write the clips as JSON, then\n"
         f"  [dim]clipper select {analysis.source.video_id} --from clips.json[/dim]\n"
         f"  [dim]clipper build {analysis.source.video_id}[/dim]"
     )
@@ -162,19 +163,19 @@ def analyze(
 
 @app.command("select")
 def select_cmd(
-    video_id: str = typer.Argument(..., help="Video-ID aus 'clipper analyze'"),
+    video_id: str = typer.Argument(..., help="Video ID from 'clipper analyze'"),
     from_file: str = typer.Option(
-        ..., "--from", help="JSON-Datei mit den Clips, oder '-' fuer stdin"
+        ..., "--from", help="JSON file with the clips, or '-' for stdin"
     ),
-    config: Optional[Path] = typer.Option(None, "--config", "-c", help="Eigene YAML"),
-    clips: Optional[int] = typer.Option(None, "--clips", "-n", help="Anzahl Clips"),
+    config: Optional[Path] = typer.Option(None, "--config", "-c", help="Custom YAML config"),
+    clips: Optional[int] = typer.Option(None, "--clips", "-n", help="Number of clips"),
     min_duration: Optional[float] = typer.Option(None, "--min"),
     max_duration: Optional[float] = typer.Option(None, "--max"),
 ) -> None:
-    """Nimmt fertige Clipvorschlaege entgegen und raeumt sie auf.
+    """Take finished clip proposals and clean them up.
 
-    Die Vorschlaege durchlaufen dieselbe Nachbearbeitung wie beim API-Pfad:
-    Schnittgrenzen, Wortgrenzen, Laengenkorrektur, Ueberlappungen.
+    The proposals run through the same post-processing as the API path: cut
+    boundaries, word boundaries, length correction, overlaps.
     """
     cfg = load_config(config, _overrides(
         clips=clips, min_duration=min_duration, max_duration=max_duration
@@ -184,41 +185,41 @@ def select_cmd(
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
-        console.print(f"[red]Kein gueltiges JSON: {exc}[/red]")
+        console.print(f"[red]Not valid JSON: {exc}[/red]")
         raise typer.Exit(code=1)
 
     raw = payload.get("clips", payload) if isinstance(payload, dict) else payload
     if not isinstance(raw, list) or not raw:
-        console.print("[red]Erwartet wird {\"clips\": [...]} oder eine Liste.[/red]")
+        console.print("[red]Expected {\"clips\": [...]} or a plain list.[/red]")
         raise typer.Exit(code=1)
 
     analysis = pipeline.load_analysis(video_id)
     try:
         cleaned = pipeline.store_candidates(analysis, raw, cfg)
     except ValidationError as exc:
-        console.print(f"[red]Clip passt nicht ins Schema:[/red]\n{exc}")
+        console.print(f"[red]Clip does not match the schema:[/red]\n{exc}")
         raise typer.Exit(code=1)
 
-    console.print(f"[green]{len(cleaned)} Clips uebernommen[/green]")
+    console.print(f"[green]{len(cleaned)} clips accepted[/green]")
     for cand in cleaned:
         console.print(
             f"  [cyan]{cand.start:7.2f}-{cand.end:7.2f}[/cyan] "
             f"({cand.duration:4.1f}s) [{cand.score:3.0f}] {cand.title}"
         )
 
-    # Verworfene namentlich nennen. Beim Maximieren der Ausbeute ist genau das
-    # die handlungsrelevante Information: ein Clip faellt fast immer weg, weil
-    # er nach dem Snappen in einen hoeher bewerteten Nachbarn hineinragt - mit
-    # etwas verschobenen Grenzen passt er beim naechsten Versuch.
+    # Name the dropped clips. When maximising yield that is exactly the
+    # actionable information: a clip almost always falls out because after
+    # snapping it runs into a higher-scored neighbour - with slightly shifted
+    # boundaries it fits on the next attempt.
     kept = {c.title for c in cleaned}
     dropped = [c for c in raw if c.get("title") not in kept]
     if dropped:
         min_score = cfg["select"].get("min_score", 0)
-        console.print(f"\n[yellow]{len(dropped)} verworfen:[/yellow]")
+        console.print(f"\n[yellow]{len(dropped)} dropped:[/yellow]")
         for item in dropped:
             score = item.get("score", 0)
-            why = ("Score unter %g" % min_score if score < min_score
-                   else "Ueberlappung oder zu kurz nach dem Snappen")
+            why = ("score below %g" % min_score if score < min_score
+                   else "overlap, or too short after snapping")
             console.print(
                 f"  [dim]{item.get('start', 0):7.2f}-{item.get('end', 0):7.2f} "
                 f"[{score:3.0f}] {item.get('title', '?')} - {why}[/dim]"
@@ -228,11 +229,11 @@ def select_cmd(
 
 @app.command()
 def build(
-    video_id: str = typer.Argument(..., help="Video-ID aus 'clipper analyze'"),
-    no_captions: bool = typer.Option(False, "--no-captions", help="Ohne Untertitel"),
-    config: Optional[Path] = typer.Option(None, "--config", "-c", help="Eigene YAML"),
+    video_id: str = typer.Argument(..., help="Video ID from 'clipper analyze'"),
+    no_captions: bool = typer.Option(False, "--no-captions", help="Without captions"),
+    config: Optional[Path] = typer.Option(None, "--config", "-c", help="Custom YAML config"),
 ) -> None:
-    """Rendert die Clips aus der gespeicherten Auswahl."""
+    """Render the clips from the stored selection."""
     overrides = {"captions": {"enabled": False}} if no_captions else None
     cfg = load_config(config, overrides)
 
@@ -247,9 +248,9 @@ def build(
 
 @app.command("list")
 def list_clips(
-    video_id: Optional[str] = typer.Argument(None, help="Video-ID, sonst alle"),
+    video_id: Optional[str] = typer.Argument(None, help="Video ID, or all if omitted"),
 ) -> None:
-    """Zeigt bereits erzeugte Clips samt Hook und Caption."""
+    """Show already generated clips with their hook and caption."""
     dirs = [OUT_DIR / video_id] if video_id else sorted(
         d for d in OUT_DIR.glob("*") if d.is_dir()
     )
@@ -271,7 +272,7 @@ def list_clips(
                 console.print(f"      [dim]{clip['caption']}[/dim]")
 
     if not found:
-        console.print("[yellow]Noch keine Clips erzeugt.[/yellow]")
+        console.print("[yellow]No clips generated yet.[/yellow]")
 
 
 if __name__ == "__main__":

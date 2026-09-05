@@ -1,8 +1,8 @@
-"""Stufe 5: Momentauswahl.
+"""Stage 5: moment selection.
 
-Baut ein kompaktes "Timeline-Dokument" aus Transkript, Shot-Grenzen und
-Audio-Energie, haengt Keyframes als Bilder an und laesst Claude die Clips
-waehlen. Ohne API-Key greift eine rein heuristische Auswahl.
+Builds a compact "timeline document" from the transcript, shot boundaries and
+audio energy, attaches keyframes as images, and lets Claude pick the clips.
+Without an API key a purely heuristic selection takes over.
 """
 
 from __future__ import annotations
@@ -17,50 +17,49 @@ from .scenes import snap_end_within, snap_to_shots
 from .vision import encode_image_block
 
 SYSTEM_PROMPT = """\
-Du bist Cutter fuer virale Short-Form-Clips (TikTok, Reels, Shorts).
+You are an editor cutting viral short-form clips (TikTok, Reels, Shorts).
 
-Du bekommst die Timeline eines Long-Form-Videos: Transkript mit Zeitstempeln,
-Shot-Grenzen und eine normalisierte Audio-Energiekurve. Zusaetzlich Keyframes
-als Bilder, jeder mit seinem Zeitstempel beschriftet.
+You receive the timeline of a long-form video: a timestamped transcript, shot
+boundaries and a normalised audio energy curve. Plus keyframes as images, each
+labelled with its timestamp.
 
-Deine Aufgabe: die Momente finden, die als eigenstaendiger Clip funktionieren.
+Your task: find the moments that work as a standalone clip.
 
-Kriterien, nach Wichtigkeit:
-1. Der Clip muss ohne jeden Kontext verstaendlich sein. Wer das Quellvideo nicht
-   kennt, muss in den ersten 2 Sekunden begreifen, worum es geht.
-2. Es braucht eine Aufloesung - eine Frage die beantwortet wird, ein Versuch der
-   gelingt oder scheitert, eine Reaktion die kommt. Ein Clip der aufbaut und
-   dann abbricht, verliert den Zuschauer.
-3. Der Anfang muss sofort greifen. Kein Vorlauf, kein Anmoderieren.
-4. Hohe Audio-Energie korreliert stark mit Reaktionen und Hoehepunkten, ist aber
-   allein kein Grund - laute Musik ohne Ereignis ist kein Clip.
+Criteria, in order of importance:
+1. The clip must make sense with zero context. Someone who has never seen the
+   source video must grasp what is going on within the first 2 seconds.
+2. It needs a resolution - a question that gets answered, an attempt that
+   succeeds or fails, a reaction that lands. A clip that builds up and then
+   cuts away loses the viewer.
+3. The opening must grab immediately. No run-up, no introduction.
+4. High audio energy correlates strongly with reactions and payoffs, but is
+   not a reason on its own - loud music without an event is not a clip.
 
-Setze start und end IMMER auf die naechstgelegene Shot-Grenze aus der Liste.
-Ueberlappende Clips sind nicht erlaubt.
+ALWAYS place start and end on the nearest shot boundary from the list.
+Overlapping clips are not allowed.
 
-Fuer jeden Clip:
-- title: interner Arbeitstitel, kurz
-- hook: der Text, der die ersten Sekunden ueber dem Bild steht. Maximal 8 Woerter,
-  neugierig machend, kein Clickbait der nicht eingeloest wird.
-- caption: fertige TikTok-Caption inkl. 3-5 Hashtags
-- reason: eine Zeile, warum dieser Moment funktioniert
-- score: 0-100, deine ehrliche Einschaetzung des viralen Potenzials.
-  Nutze die Skala wirklich aus - wenn ein Video nur mittelmaessige Momente
-  hergibt, vergib auch mittelmaessige Scores.
+For each clip:
+- title: short internal working title
+- hook: the text shown over the frame for the first few seconds. At most 8
+  words, makes the viewer curious, no clickbait you do not pay off.
+- caption: a finished TikTok caption including 3-5 hashtags
+- reason: one line on why this moment works
+- score: 0-100, your honest estimate of viral potential. Actually use the
+  range - if a video only yields mediocre moments, hand out mediocre scores.
 
-SPRACHE: title, hook und caption muessen auf {output_language} sein - das ist
-der Text, der im Video und unter dem Post steht. Er muss zur Sprache des
-Quellmaterials und der Zielgruppe passen, nicht zur Sprache dieser Anweisung.
-`reason` ist nur eine interne Notiz und darf deutsch bleiben.
+LANGUAGE: title, hook and caption must be in {output_language} - that is the
+text shown in the video and under the post. It has to match the language of the
+source material and the target audience, not the language of these
+instructions. `reason` is an internal note and may be in any language.
 """
 
 
 LANGUAGE_NAMES = {
-    "en": "Englisch",
-    "de": "Deutsch",
-    "es": "Spanisch",
-    "fr": "Franzoesisch",
-    "pt": "Portugiesisch",
+    "en": "English",
+    "de": "German",
+    "es": "Spanish",
+    "fr": "French",
+    "pt": "Portuguese",
 }
 
 
@@ -84,17 +83,17 @@ class _LLMResponse(BaseModel):
 
 
 def _assignment(sel: dict, duration: float) -> str:
-    """Auftragszeile - feste Stueckzahl oder 'so viele wie moeglich'."""
-    span = f"je {sel['min_duration']:.0f}-{sel['max_duration']:.0f} Sekunden"
+    """The assignment line - a fixed count, or as many clips as possible."""
+    span = f"{sel['min_duration']:.0f}-{sel['max_duration']:.0f} seconds each"
     if sel.get("clips"):
-        return f"Gewuenscht: {sel['clips']} Clips, {span}."
+        return f"Wanted: {sel['clips']} clips, {span}."
     ceiling = int(duration // max(sel["min_duration"], 1))
     return (
-        f"Gewuenscht: SO VIELE Clips wie das Material hergibt, {span}. "
-        f"Bis zu {ceiling} passen ueberschneidungsfrei hinein - Obergrenze, "
-        f"keine Vorgabe. Gehe das Video von vorne bis hinten durch. Clips "
-        f"unter Score {sel.get('min_score', 45)} werden verworfen, also lieber "
-        f"ehrlich bewerten als schoenen."
+        f"Wanted: AS MANY clips as the material supports, {span}. "
+        f"Up to {ceiling} fit without overlapping - that is a ceiling, not a "
+        f"target. Work through the video from start to finish. Clips below "
+        f"score {sel.get('min_score', 45)} are discarded, so score honestly "
+        f"rather than generously."
     )
 
 
@@ -102,8 +101,8 @@ def _transcript_block(segments: list[Segment], max_chars: int = 60_000) -> str:
     lines = [f"[{s.start:.1f}-{s.end:.1f}] {s.text}" for s in segments if s.text]
     text = "\n".join(lines)
     if len(text) > max_chars:
-        # Nicht still abschneiden - dem Modell sagen, dass etwas fehlt.
-        text = text[:max_chars] + "\n[... Transkript gekuerzt ...]"
+        # Do not truncate silently - tell the model something is missing.
+        text = text[:max_chars] + "\n[... transcript truncated ...]"
     return text
 
 
@@ -112,25 +111,25 @@ def _shots_block(shots: list[Shot], limit: int = 400) -> str:
         chosen = shots
         note = ""
     else:
-        # Bei sehr schnittintensiven Videos nur die laengeren Shots zeigen -
-        # Ein-Sekunden-Shots sind ohnehin keine sinnvollen Clipgrenzen.
+        # On very cut-heavy videos show only the longer shots - one-second
+        # shots are not sensible clip boundaries anyway.
         chosen = sorted(shots, key=lambda s: s.duration, reverse=True)[:limit]
         chosen = sorted(chosen, key=lambda s: s.start)
-        note = f" (nur die {limit} laengsten von {len(shots)} Shots)"
-    return f"Shot-Grenzen in Sekunden{note}:\n" + ", ".join(
+        note = f" (only the {limit} longest of {len(shots)} shots)"
+    return f"Shot boundaries in seconds{note}:\n" + ", ".join(
         f"{s.start:.2f}" for s in chosen
     )
 
 
 def _energy_block(times: np.ndarray, energy: np.ndarray, step: float = 2.0) -> str:
     if len(times) == 0:
-        return "Keine Audiodaten."
+        return "No audio data."
     if len(times) > 1:
         stride = max(1, int(step / max(times[1] - times[0], 1e-6)))
     else:
         stride = 1
     pairs = [f"{times[i]:.0f}:{energy[i]:.2f}" for i in range(0, len(times), stride)]
-    return "Audio-Energie (Sekunde:Wert 0-1):\n" + " ".join(pairs)
+    return "Audio energy (second:value 0-1):\n" + " ".join(pairs)
 
 
 def select_with_llm(
@@ -151,10 +150,10 @@ def select_with_llm(
         "type": "text",
         "text": (
             f"Video: {source.title}\n"
-            f"Kanal: {source.channel}\n"
-            f"Laenge: {source.duration:.0f}s\n\n"
+            f"Channel: {source.channel}\n"
+            f"Length: {source.duration:.0f}s\n\n"
             f"{_assignment(sel, source.duration)}\n\n"
-            f"--- TRANSKRIPT ---\n{_transcript_block(segments)}\n\n"
+            f"--- TRANSCRIPT ---\n{_transcript_block(segments)}\n\n"
             f"--- {_shots_block(shots)}\n\n"
             f"--- {_energy_block(times, energy)}\n"
         ),
@@ -163,7 +162,7 @@ def select_with_llm(
     if keyframes:
         content.append({
             "type": "text",
-            "text": f"\n--- {len(keyframes)} KEYFRAMES (chronologisch) ---",
+            "text": f"\n--- {len(keyframes)} KEYFRAMES (chronological) ---",
         })
         for t, path in keyframes:
             content.append({"type": "text", "text": f"t={t:.1f}s"})
@@ -180,10 +179,10 @@ def select_with_llm(
     )
 
     if response.stop_reason == "refusal":
-        category = getattr(response.stop_details, "category", "unbekannt")
+        category = getattr(response.stop_details, "category", "unknown")
         raise RuntimeError(
-            f"Das Modell hat die Anfrage abgelehnt ({category}). "
-            "Mit --no-llm laeuft die heuristische Auswahl."
+            f"The model refused the request ({category}). "
+            "Use --no-llm to fall back to heuristic selection."
         )
 
     parsed = response.parsed_output
@@ -210,17 +209,17 @@ def select_heuristic(
     peaks: list[EnergyPeak],
     cfg: dict,
 ) -> list[Candidate]:
-    """Fallback ohne API-Key: Fenster um die staerksten Energie-Spitzen.
+    """Fallback without an API key: windows around the strongest energy peaks.
 
-    Deutlich schlechter als die LLM-Auswahl, weil rein akustisch - aber
-    brauchbar zum Testen der restlichen Pipeline.
+    Considerably worse than the LLM selection because it is purely acoustic -
+    but good enough to exercise the rest of the pipeline.
     """
     sel = cfg["select"]
     target = (sel["min_duration"] + sel["max_duration"]) / 2
     candidates: list[Candidate] = []
 
     for peak in sorted(peaks, key=lambda p: p.score, reverse=True):
-        # Peak leicht nach hinten setzen: die Reaktion ist interessanter als der Aufbau.
+        # Shift the peak slightly back: the reaction beats the build-up.
         start = max(0.0, peak.t - target * 0.65)
         end = start + target
         if any(not (end <= c.start or start >= c.end) for c in candidates):
@@ -228,9 +227,9 @@ def select_heuristic(
         text = " ".join(
             s.text for s in segments if s.start < end and s.end > start
         ).strip()
-        # Bewusst kein Hook: die Heuristik kennt nur Lautstaerke und koennte
-        # hoechstens den Transkriptanfang wiederholen - der laeuft ohnehin
-        # schon als Untertitel. Ein leerer Hook unterdrueckt das Overlay.
+        # Deliberately no hook: the heuristic only knows loudness and could at
+        # best repeat the start of the transcript - which already runs as a
+        # caption anyway. An empty hook suppresses the overlay.
         preview = " ".join(text.split()[:8])
         candidates.append(
             Candidate(
@@ -251,11 +250,11 @@ def select_heuristic(
 def _avoid_word_split(
     t: float, words: list[Word], *, edge: str, max_drift: float = 0.4
 ) -> float:
-    """Verschiebt einen Schnittpunkt aus einem laufenden Wort heraus.
+    """Move a cut point out of a word that is still being spoken.
 
-    Ein Schnitt mitten in einer Silbe faellt sofort als Fehler auf, auch wenn
-    er sauber auf einer Bildgrenze sitzt. Die Verschiebung bleibt klein, damit
-    die Shot-Ausrichtung nicht nennenswert verloren geht.
+    A cut in the middle of a syllable reads as a mistake immediately, even when
+    it sits cleanly on a frame boundary. The shift stays small so the shot
+    alignment is not meaningfully lost.
     """
     for word in words:
         if word.start < t < word.end:
@@ -272,7 +271,7 @@ def _finalize(
     cfg: dict,
     segments: list[Segment] | None = None,
 ) -> list[Candidate]:
-    """Auf Shot- und Wortgrenzen ziehen, Laenge einhalten, Ueberlappungen entfernen."""
+    """Snap to shot and word boundaries, honour length, resolve overlaps."""
     sel = cfg["select"]
     min_d, max_d = sel["min_duration"], sel["max_duration"]
     min_score = sel.get("min_score", 0)
@@ -284,10 +283,10 @@ def _finalize(
         start = snap_to_shots(cand.start, shots, edge=edge)
         hard_max = None
         if taken:
-            # In die freie Luecke zwischen den schon vergebenen Clips einpassen.
+            # Fit into the free gap between the clips already placed.
             start = max(start, max((c.end for c in taken if c.end <= cand.end), default=0.0))
             hard_max = min((c.start for c in taken if c.start >= start), default=None)
-        # Laenge und Schnittgrenze gemeinsam loesen statt nacheinander.
+        # Solve length and cut boundary together rather than one after the other.
         end = snap_end_within(start, cand.end, shots, min_d, max_d, hard_max=hard_max)
         if words:
             start = _avoid_word_split(start, words, edge="start")
@@ -296,9 +295,9 @@ def _finalize(
 
     cleaned: list[Candidate] = []
     for cand in sorted(candidates, key=lambda c: c.score, reverse=True):
-        # Schwache Clips fruehzeitig aussortieren. Bei unbegrenzter Clipzahl
-        # ist der Score die einzige Qualitaetsbremse - ohne sie wuerde jedes
-        # belanglose Fenster gerendert.
+        # Drop weak clips early. With an unlimited clip count the score is the
+        # only quality brake - without it every unremarkable window would get
+        # rendered.
         if cand.score < min_score:
             continue
 
@@ -310,15 +309,15 @@ def _finalize(
 
         placed = place(cand, "start")
         if not usable(placed):
-            # Zweiter Versuch mit dem Start auf der naechsten Grenze NACH dem
-            # Wunschzeitpunkt. Das Rueckwaerts-Snappen laesst direkt
-            # aufeinanderfolgende Momente sonst ineinanderlaufen, und der
-            # spaetere verliert - obwohl beide Platz haetten.
+            # Second attempt with the start on the next boundary AFTER the
+            # desired time. Snapping backwards otherwise makes directly
+            # consecutive moments run into each other, and the later one loses -
+            # even though there is room for both.
             placed = place(cand, "end")
             if not usable(placed):
-                # Dritter Versuch: in die tatsaechlich freie Luecke einpassen.
-                # Nachbarn dehnen sich beim Snappen auf Schnittgrenzen aus und
-                # quetschen einen Moment sonst heraus, fuer den noch Platz ist.
+                # Third attempt: fit into the actually free gap. Neighbours
+                # expand when snapping to cut boundaries and would otherwise
+                # squeeze out a moment there is still room for.
                 placed = place(cand, "end", taken=cleaned)
                 if not usable(placed):
                     continue
@@ -326,9 +325,9 @@ def _finalize(
         cand.start, cand.end = placed
         cleaned.append(cand)
 
-    # clips = 0 heisst unbegrenzt: alles nehmen, was Score, Laenge und
-    # Ueberlappung ueberlebt hat. Die Auswahl lief nach Score absteigend, damit
-    # bei Ueberlappung der staerkere Clip gewinnt; ausgegeben wird chronologisch.
+    # clips = 0 means unlimited: take everything that survived score, length
+    # and overlap. Selection ran by descending score so the stronger clip wins a
+    # collision; output is chronological.
     limit = sel.get("clips") or 0
     cleaned.sort(key=lambda c: c.score, reverse=True)
     if limit > 0:

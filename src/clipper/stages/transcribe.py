@@ -1,4 +1,4 @@
-"""Stufe 2: Transkript mit Wort-Zeitstempeln (faster-whisper / CTranslate2)."""
+"""Stage 2: transcript with word-level timestamps (faster-whisper / CTranslate2)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from ..utils.cuda import register_cuda_dlls
 
 
 def _resolve_device(requested: str) -> tuple[str, str]:
-    """Gibt (device, compute_type) zurueck. Faellt sauber auf CPU zurueck."""
+    """Return (device, compute_type). Falls back to CPU cleanly."""
     if requested == "cpu":
         return "cpu", "int8"
 
@@ -25,7 +25,7 @@ def _resolve_device(requested: str) -> tuple[str, str]:
 
 
 def transcribe(video_path: Path, cfg: dict) -> list[Segment]:
-    # Muss vor dem Import laufen: CTranslate2 loest die CUDA-DLLs beim Laden auf.
+    # Must run before the import: CTranslate2 resolves the CUDA DLLs on load.
     register_cuda_dlls()
     from faster_whisper import WhisperModel
 

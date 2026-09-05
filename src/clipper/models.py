@@ -1,4 +1,4 @@
-"""Datenmodelle der Pipeline. Alle Zeiten in Sekunden (float), relativ zum Quellvideo."""
+"""Pipeline data models. All times in seconds (float), relative to the source video."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ class Segment(BaseModel):
 
 
 class Shot(BaseModel):
-    """Ein Kamera-Shot zwischen zwei harten Schnitten."""
+    """One camera shot between two hard cuts."""
 
     index: int
     start: float
@@ -43,14 +43,14 @@ class SourceVideo(BaseModel):
 
 
 class EnergyPeak(BaseModel):
-    """Lautstärke-Spitze im Audio - bei Reaction-Content das stärkste Einzelsignal."""
+    """Loudness peak in the audio - the strongest single signal for reaction content."""
 
     t: float
-    score: float  # 0..1, normalisiert über das gesamte Video
+    score: float  # 0..1, normalised across the whole video
 
 
 class Candidate(BaseModel):
-    """Ein vorgeschlagener Clip, bevor er gerendert wird."""
+    """A proposed clip, before it gets rendered."""
 
     start: float
     end: float
@@ -58,7 +58,7 @@ class Candidate(BaseModel):
     hook: str = ""
     reason: str = ""
     score: float = 0.0  # 0..100
-    caption: str = ""  # Vorschlag für die TikTok-Caption
+    caption: str = ""  # suggested TikTok caption
 
     @property
     def duration(self) -> float:
@@ -66,7 +66,7 @@ class Candidate(BaseModel):
 
 
 class CropKeyframe(BaseModel):
-    """Crop-Fenster ab Zeitpunkt t. Konstant bis zum naechsten Keyframe."""
+    """Crop window starting at time t. Constant until the next keyframe."""
 
     t: float
     x: int
@@ -76,7 +76,7 @@ class CropKeyframe(BaseModel):
 
 
 class ClipPlan(BaseModel):
-    """Alles, was der Renderer für einen Clip braucht."""
+    """Everything the renderer needs for one clip."""
 
     index: int
     candidate: Candidate

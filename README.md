@@ -1,6 +1,9 @@
 # Clipper
 
-Drop in a YouTube link, get finished vertical clips out. Runs entirely locally on your own GPU.
+**A local, self-hosted alternative to OpusClip.** Drop in a YouTube link, get finished
+vertical clips out — captions burned in, subject centered, ready to post.
+
+![16:9 source on the left, the generated 9:16 clip with burned-in captions on the right](docs/demo.gif)
 
 ```bash
 clipper analyze "https://www.youtube.com/watch?v=..."
@@ -8,17 +11,25 @@ clipper select <video-id> --from clips.json
 clipper build <video-id>
 ```
 
-A 20-minute source video yields 30+ standalone 9:16 clips with burned-in captions,
-a hook overlay, subject-centered cropping, and ready-to-paste TikTok captions.
+Everything runs on your own machine: no upload, no subscription, no per-minute pricing.
+A 20-minute source video yields 30+ standalone 9:16 clips, each with a hook overlay,
+word-level captions and a ready-to-paste social caption.
 
-> Code comments are in German. This documentation and the generated clips are in
-> English (`select.output_language`).
+Three things set it apart from most open-source clippers:
+
+- **Keyframes go to the model as images**, not just the transcript — so it also works on
+  action, gaming and challenge content, where the transcript says nothing about what is
+  happening on screen.
+- **No PyTorch.** Face detection uses YuNet from OpenCV (340 KB), transcription uses
+  CTranslate2. The whole install stays small.
+- **It works without any API key** — an included briefing format lets a Claude Code
+  session do the moment selection instead.
 
 ---
 
 ## Contents
 
-- [What this is for](#what-this-is-for)
+- [Why this exists](#why-this-exists)
 - [What the pipeline does](#what-the-pipeline-does)
 - [Installation](#installation)
 - [Two paths through the pipeline](#two-paths-through-the-pipeline)
@@ -35,21 +46,26 @@ a hook overlay, subject-centered cropping, and ready-to-paste TikTok captions.
 
 ---
 
-## What this is for
+## Why this exists
 
-Clipping campaigns (Whop / Content Rewards, Vyro, clipping.net) pay per 1,000 views
-for short vertical clips cut from someone else's long-form material. The bottleneck
-isn't reach — it's throughput: getting as many usable clips as possible out of every
-source video without spending hours editing by hand.
+Turning long-form video into short-form is a throughput problem: getting as many usable
+clips as possible out of every source video without spending hours in an editor. The
+hosted tools solve it, but they charge per minute of video and you upload your material
+to someone else's server.
 
-That's what this project does. It's a local, self-hosted equivalent of OpusClip, with
-one key difference: moment selection comes from a model with **visual understanding**,
-not just from the transcript.
+The open-source alternatives mostly pick moments from the transcript alone. That works
+for podcasts and interviews, where what matters is what someone says. It falls apart on
+anything visual — "oh my god" tells you nothing about whether a car just exploded or
+someone opened a door. So this pipeline samples keyframes and sends them to the model as
+images alongside the transcript, shot boundaries and an audio energy curve.
 
-That difference matters for action and challenge content. In a podcast, the transcript
-tells you where the good moment is. In a MrBeast video it doesn't — "oh my god" says
-nothing about whether a car just exploded or someone opened a door. That's why
-keyframes are sent along as images.
+Typical uses:
+
+- **Podcast and interview repurposing** — turn each episode into a batch of clips
+- **Gaming, sports and reaction content** — where the payoff is visual, not spoken
+- **Clipping campaigns** (Whop / Content Rewards, Vyro, clipping.net) — platforms that
+  pay per 1,000 views for clips cut from a creator's released material. See
+  [Legal](#legal) before using it that way.
 
 ---
 

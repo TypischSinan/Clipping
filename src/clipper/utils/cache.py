@@ -1,5 +1,5 @@
-"""Stage-Caching: jede Stufe schreibt ihr Ergebnis als JSON und ueberspringt sich,
-wenn die Datei schon existiert. Spart bei Re-Runs den teuren Whisper-Durchlauf."""
+"""Stage caching: each stage writes its result as JSON and skips itself when the
+file already exists. Saves the expensive Whisper pass on re-runs."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ T = TypeVar("T")
 
 
 def cached_json(path: Path, force: bool, produce: Callable[[], Any]) -> Any:
-    """Gibt geparstes JSON aus `path` zurueck oder ruft `produce` und schreibt das Ergebnis."""
+    """Return parsed JSON from `path`, or call `produce` and write the result."""
     if path.exists() and not force:
         with path.open("r", encoding="utf-8") as fh:
             return json.load(fh)

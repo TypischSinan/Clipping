@@ -1,4 +1,4 @@
-"""Stufe 1: YouTube-Link -> lokale mp4 + Metadaten."""
+"""Stage 1: YouTube link -> local mp4 + metadata."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from ..utils.ffmpeg import parse_fps, probe, video_stream
 
 
 def _to_seconds(value: str) -> float:
-    """Akzeptiert '90', '1:30' und '0:01:30'."""
+    """Accepts '90', '1:30' and '0:01:30'."""
     parts = value.strip().split(":")
     seconds = 0.0
     for part in parts:
@@ -21,11 +21,11 @@ def _to_seconds(value: str) -> float:
 
 
 def parse_section(spec: str) -> tuple[float, float]:
-    """Zerlegt '*120-360' oder '2:00-6:00' in (start, end) in Sekunden."""
+    """Split '*120-360' or '2:00-6:00' into (start, end) in seconds."""
     text = spec.strip().lstrip("*")
     start_text, sep, end_text = text.partition("-")
     if not sep:
-        raise ValueError(f"Abschnitt '{spec}' braucht die Form START-ENDE")
+        raise ValueError(f"Section '{spec}' must have the form START-END")
     return _to_seconds(start_text), _to_seconds(end_text)
 
 
@@ -33,7 +33,7 @@ def download(url: str, work_dir: Path, cfg: dict, force: bool = False) -> Source
     max_height = cfg["ingest"]["max_height"]
     sections = cfg["ingest"].get("download_sections")
 
-    # Erst nur Metadaten holen, um das Arbeitsverzeichnis nach video_id zu benennen.
+    # Fetch metadata first so the work directory can be named after video_id.
     with YoutubeDL({"quiet": True, "no_warnings": True, "skip_download": True}) as ydl:
         info = ydl.extract_info(url, download=False)
 
@@ -60,26 +60,26 @@ def download(url: str, work_dir: Path, cfg: dict, force: bool = False) -> Source
             "noprogress": True,
         }
         if sections:
-            # download_range_func(chapters, ranges) - ranges sind (start, end)
-            # in Sekunden. Die Sternchen-Syntax aus der yt-dlp-CLI versteht die
-            # Python-API nicht, sie muss vorher aufgeloest werden.
+            # download_range_func(chapters, ranges) - ranges are (start, end)
+            # in seconds. The yt-dlp CLI's asterisk syntax is not understood by
+            # the Python API, so it has to be resolved beforehand.
             start_s, end_s = parse_section(sections)
             opts["download_ranges"] = download_range_func(None, [(start_s, end_s)])
-            # Ohne das schneidet yt-dlp am Keyframe und der Ausschnitt beginnt
-            # frueher als angegeben - alle Zeitstempel waeren dann verschoben.
+            # Without this yt-dlp cuts at the keyframe and the section starts
+            # earlier than requested - shifting every timestamp downstream.
             opts["force_keyframes_at_cuts"] = True
         with YoutubeDL(opts) as ydl:
             ydl.download([url])
         candidates = [p for p in sorted(target_dir.glob("source.*"))
                       if p.suffix in {".mp4", ".mkv", ".webm"}]
         if not candidates:
-            raise RuntimeError(f"Download lieferte keine Videodatei in {target_dir}")
+            raise RuntimeError(f"Download produced no video file in {target_dir}")
         path = candidates[0]
 
     stream = video_stream(path)
-    # Dauer aus der Datei lesen, nicht aus den yt-dlp-Metadaten: bei einem
-    # Teil-Download beziehen sich alle Zeitstempel der Pipeline auf die Datei,
-    # waehrend die Metadaten die Laenge des vollen Videos melden.
+    # Read the duration from the file, not from yt-dlp metadata: on a partial
+    # download every timestamp in the pipeline refers to the file, while the
+    # metadata reports the length of the full video.
     file_duration = float(probe(path).get("format", {}).get("duration") or 0.0)
 
     return SourceVideo(

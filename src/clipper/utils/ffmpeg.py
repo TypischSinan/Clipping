@@ -1,4 +1,4 @@
-"""Duenne ffmpeg/ffprobe-Huelle. Kein Python-Wrapper-Paket noetig."""
+"""Thin ffmpeg/ffprobe wrapper. No Python wrapper package needed."""
 
 from __future__ import annotations
 
@@ -18,13 +18,13 @@ def ensure_ffmpeg() -> None:
     for binary in ("ffmpeg", "ffprobe"):
         if shutil.which(binary) is None:
             raise FFmpegError(
-                f"'{binary}' nicht im PATH gefunden. Installiere ffmpeg "
-                "(z.B. 'winget install Gyan.FFmpeg') und oeffne die Shell neu."
+                f"'{binary}' not found on PATH. Install ffmpeg "
+                "(e.g. 'winget install Gyan.FFmpeg') and reopen your shell."
             )
 
 
 def run(args: list[str], *, capture: bool = False, cwd: Path | None = None) -> str:
-    """Fuehrt ffmpeg/ffprobe aus und wirft bei Fehler mit stderr im Text."""
+    """Run ffmpeg/ffprobe; on failure raise with stderr included in the message."""
     proc = subprocess.run(
         args,
         stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
@@ -57,7 +57,7 @@ def video_stream(path: Path) -> dict:
     for stream in probe(path).get("streams", []):
         if stream.get("codec_type") == "video":
             return stream
-    raise FFmpegError(f"Kein Videostream in {path}")
+    raise FFmpegError(f"No video stream in {path}")
 
 
 def parse_fps(rate: str) -> float:
@@ -70,7 +70,7 @@ def parse_fps(rate: str) -> float:
 
 
 def decode_audio_mono(path: Path, sample_rate: int = 16_000) -> np.ndarray:
-    """Dekodiert die Tonspur als float32-Mono-Array. Fuer die Energie-Analyse."""
+    """Decode the audio track as a float32 mono array, for the energy analysis."""
     proc = subprocess.run(
         [
             "ffmpeg", "-v", "error", "-i", str(path),
@@ -84,12 +84,12 @@ def decode_audio_mono(path: Path, sample_rate: int = 16_000) -> np.ndarray:
     )
     if proc.returncode != 0:
         tail = proc.stderr.decode("utf-8", "replace").strip().splitlines()[-10:]
-        raise FFmpegError("Audio-Dekodierung fehlgeschlagen:\n" + "\n".join(tail))
+        raise FFmpegError("Audio decoding failed:\n" + "\n".join(tail))
     return np.frombuffer(proc.stdout, dtype=np.float32)
 
 
 def has_encoder(name: str) -> bool:
-    """Prueft nur, ob ffmpeg mit diesem Encoder gebaut wurde."""
+    """Only checks whether ffmpeg was built with this encoder."""
     try:
         out = run(["ffmpeg", "-v", "error", "-hide_banner", "-encoders"], capture=True)
     except FFmpegError:
@@ -98,11 +98,11 @@ def has_encoder(name: str) -> bool:
 
 
 def encoder_works(name: str) -> bool:
-    """Kodiert testweise einen Frame.
+    """Encode one test frame.
 
-    Ein einkompilierter Encoder heisst nicht, dass er laeuft: NVENC scheitert
-    z.B. zur Laufzeit, wenn die Treiberversion aelter ist als die NVENC-API,
-    gegen die ffmpeg gebaut wurde. Das faellt sonst erst beim Rendern auf.
+    A compiled-in encoder does not mean a working one: NVENC fails at runtime
+    when the driver is older than the NVENC API ffmpeg was built against.
+    Otherwise that only surfaces during rendering.
     """
     if not has_encoder(name):
         return False
@@ -122,7 +122,7 @@ _encoder_cache: dict[str, str] = {}
 
 
 def pick_encoder(preference: str) -> str:
-    """'auto' nimmt NVENC, wenn er wirklich funktioniert - sonst libx264."""
+    """'auto' picks NVENC if it actually works, otherwise libx264."""
     if preference != "auto":
         return preference
     if "auto" in _encoder_cache:

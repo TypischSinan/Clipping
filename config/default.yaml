@@ -1,101 +1,104 @@
-# Standardkonfiguration. Ueberschreibbar per --config eigene.yaml oder CLI-Flags.
+# Default configuration. Override with --config mine.yaml or CLI flags.
 
 ingest:
-  # Hoehere Aufloesung = besserer Crop-Spielraum. 1080p ist der sweet spot.
+  # Higher resolution means more cropping headroom. 1080p is the sweet spot.
   max_height: 1080
-  # Sections erlauben Teilverarbeitung langer Videos, z.B. "*0:00-10:00"
+  # Sections allow processing part of a long video, e.g. "*0:00-10:00"
   download_sections: null
 
 transcribe:
   model: large-v3          # tiny|base|small|medium|large-v3|distil-large-v3
   device: auto             # auto|cuda|cpu
-  compute_type: auto       # auto -> float16 auf CUDA, int8 auf CPU
-  language: null           # null = automatische Erkennung
-  vad_filter: true         # schneidet Stille, verhindert Halluzinationen
+  compute_type: auto       # auto -> float16 on CUDA, int8 on CPU
+  language: null           # null = auto-detect
+  vad_filter: true         # trims silence, prevents hallucinations
 
 scenes:
-  # Niedrigerer Threshold = mehr erkannte Schnitte. MrBeast schneidet sehr schnell.
+  # Lower threshold means more cuts detected. Fast-cut material needs a low one.
   threshold: 27.0
-  min_scene_len: 0.4       # Sekunden
+  min_scene_len: 0.4       # seconds
 
 audio:
-  # Fenster fuer die RMS-Huellkurve. Kleiner = reaktiver auf kurze Schreie.
-  window: 0.25             # Sekunden
-  peak_percentile: 90      # ab welchem Perzentil ein Fenster als Peak zaehlt
+  # Window for the RMS envelope. Smaller reacts faster to short screams.
+  window: 0.25             # seconds
+  peak_percentile: 90      # percentile above which a window counts as a peak
 
 select:
-  # 0 = so viele Clips wie das Material hergibt. Eine feste Zahl deckelt.
+  # 0 = as many clips as the material supports. A fixed number caps it.
   clips: 0
-  # Untergrenze fuer den Score. Bei unbegrenzter Clipzahl ist das die einzige
-  # Qualitaetsbremse - ohne sie landet auch jedes belanglose Fenster im Render.
+  # Score floor. With an unlimited clip count this is the only quality brake -
+  # without it every unremarkable window ends up in the render.
   min_score: 45
   min_duration: 15.0
   max_duration: 60.0
   model: claude-opus-5
   effort: high
-  # Sprache von title, hook und caption - also des Textes, der im Video und
-  # unter dem Post steht. Unabhaengig von der Sprache des Quellmaterials.
+  # Language of title, hook and caption - the text shown in the video and under
+  # the post. Independent of the language of the source material.
   output_language: en
-  # Anzahl Keyframes, die als Bilder an das Modell gehen (visuelles Verstaendnis).
-  # 0 = nur Transkript + Energie + Shots (billiger, schlechter bei Action-Content).
+  # Number of keyframes sent to the model as images (visual understanding).
+  # 0 = transcript + energy + shots only (cheaper, worse on action content).
   vision_frames: 24
 
 reframe:
   target_width: 1080
   target_height: 1920
-  # Analyse-Rate fuer die Motiverkennung. 4 fps reicht und ist schnell.
+  # Sampling rate for subject detection. 4 fps is enough and fast.
   sample_fps: 4.0
-  # Crop bleibt pro Shot statisch - sieht bei schnellen Schnitten besser aus
-  # als ein dauernd pannender Crop und ist deutlich billiger zu rendern.
+  # The crop stays static per shot - looks better on fast cuts than a
+  # constantly panning crop and is much cheaper to render.
   static_per_shot: true
-  # Mindestgroesse eines Gesichts, damit der Crop ihm folgt - als Anteil an
-  # der Bildflaeche mal Erkennungs-Score. Ohne diese Schwelle folgt der Crop
-  # auch Personen weit im Hintergrund und verpasst die eigentliche Szene.
-  # Gemessen: echte Motive liegen im Median bei 0.005, Hintergrund unter 0.001.
+  # Minimum size for a face before the crop follows it - frame area share times
+  # detection score. Without this threshold the crop also follows people far in
+  # the background and misses the actual scene. Measured: real subjects sit at a
+  # median of 0.005, background below 0.001.
   min_face_weight: 0.001
-  # Wenn kein Motiv gefunden wird: center | blur_pad
+  # When no subject is found: center | blur_pad
   fallback: blur_pad
 
 captions:
   enabled: true
   font: Arial Black
   font_size: 96
-  primary_color: "&H00FFFFFF"    # ASS-Format: &HAABBGGRR
-  highlight_color: "&H0000F0FF"  # aktives Wort (gelb)
+  primary_color: "&H00FFFFFF"    # ASS format: &HAABBGGRR
+  highlight_color: "&H0000F0FF"  # active word (yellow)
   outline: 6
   shadow: 2
-  margin_v: 420                  # Abstand vom unteren Rand in Pixeln
-  # Bei Schriftgroesse 96 in Arial Black passen rund 22 Zeichen in die
-  # Bildbreite. Die laengere Standzeit kommt deshalb aus der zweiten Zeile,
-  # nicht aus breiteren Zeilen - 20 laesst etwas Sicherheitsabstand.
-  # Wie viele Woerter gleichzeitig im Bild stehen. Das ist die fuehrende
-  # Grenze; die Zeichenwerte darunter greifen nur noch als Ueberlaufschutz,
-  # damit ein langes Wort nicht aus dem Bild laeuft.
+  margin_v: 420                  # distance from the bottom edge, in pixels
+  # How many words are on screen at once. This is the leading constraint; the
+  # character values below only act as an overflow guard so a long word does not
+  # run off the frame.
   max_words: 4
+  # At font size 96 in Arial Black roughly 22 characters fit across the frame.
+  # Longer on-screen time therefore comes from the second line, not from wider
+  # lines - 20 leaves some safety margin.
   max_chars_per_line: 20
   max_lines: 2
-  # Sprechpause, ab der ein neuer Block beginnt. Ohne das bliebe eine Zeile
-  # waehrend einer langen Pause tot im Bild stehen.
+  # Speech pause that starts a new block. Without it a line would sit dead on
+  # screen through a long silence.
   max_gap: 0.6
   uppercase: true
   strip_punctuation: true
-  pop: true                      # aktives Wort kurz vergroessern
+  pop: true                      # briefly scale up the active word
 
   hook:
     enabled: true
-    duration: 2.0                # Sekunden, ab Clipanfang
+    duration: 2.0                # seconds, from the clip start
     font_size: 110
     color: "&H00FFFFFF"
     outline: 7
-    margin_v: 300                # Abstand vom OBEREN Rand
+    margin_v: 300                # distance from the TOP edge
     max_chars_per_line: 18
     max_lines: 3
     uppercase: true
 
 render:
+  # Parallel renders. Without NVENC libx264 is the bottleneck; 4 uses the CPU
+  # well without making the machine unusable.
+  workers: 4
   encoder: auto            # auto|h264_nvenc|hevc_nvenc|libx264
-  crf: 20                  # bei NVENC als -cq interpretiert
+  crf: 20                  # interpreted as -cq under NVENC
   preset: p5
   fps: 30
   audio_bitrate: 192k
-  loudnorm: true           # auf -14 LUFS, TikTok-Standard
+  loudnorm: true           # to -14 LUFS, the TikTok standard
