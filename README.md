@@ -519,9 +519,25 @@ on an establishing shot, start it on the action.
 `workers: 4` on an i5-13600KF — without NVENC, i.e. libx264 on the CPU. A driver update
 that enables NVENC is the single biggest lever here.
 
-**Still open:** Whisper batching (`BatchedInferencePipeline`, factor 3–4), downscaling
-before shot detection, prompt caching for `--reselect`, length variants of the same
-moment as an A/B test.
+**Shot detection is decode-bound, and speeding it up costs accuracy.** Measured on
+5 minutes of 720p source, on an otherwise idle machine:
+
+| Variant | Time | Shots | Speed-up |
+|---|---|---|---|
+| full resolution | 152.4 s | 167 | 1.0× |
+| `downscale=2` | 121.9 s | 163 | 1.3× |
+| `downscale=4` | 181.0 s | 163 | 0.8× |
+| `frame_skip=1` | 106.2 s | 178 | 1.5× |
+
+Downscaling stops helping past a factor of 2 and then reverses — the detector's
+per-frame maths is cheap next to decoding, so shrinking the frame removes work that
+was never the bottleneck and adds slicing overhead. `frame_skip` is the faster of the
+two but invents boundaries: 178 instead of 167, the worst one landing 2.8 s from the
+real cut. Since clips snap to shot boundaries, that would start clips nearly three
+seconds off the intended moment. Neither is worth taking.
+
+**Still open:** Whisper batching (`BatchedInferencePipeline`, factor 3–4), prompt
+caching for `--reselect`, length variants of the same moment as an A/B test.
 
 ---
 
