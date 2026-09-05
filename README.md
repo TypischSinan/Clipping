@@ -1,6 +1,6 @@
 # Clipper
 
-[![CI](https://github.com/TypischSinan/Clipping/actions/workflows/ci.yml/badge.svg)](https://github.com/TypischSinan/Clipping/actions/workflows/ci.yml)
+[![CI](https://github.com/TypischSinan/generate-clips-for-tiktok-and-instagram/actions/workflows/ci.yml/badge.svg)](https://github.com/TypischSinan/generate-clips-for-tiktok-and-instagram/actions/workflows/ci.yml)
 
 **A local, self-hosted alternative to OpusClip.** Drop in a YouTube link, get finished
 vertical clips out — captions burned in, subject centered, ready to post.
@@ -148,8 +148,8 @@ winget install Gyan.FFmpeg
 ### Setup
 
 ```bash
-git clone https://github.com/TypischSinan/Clipping.git
-cd Clipping
+git clone https://github.com/TypischSinan/generate-clips-for-tiktok-and-instagram.git
+cd generate-clips-for-tiktok-and-instagram
 uv sync --extra cuda
 uv pip install -e .
 ```
