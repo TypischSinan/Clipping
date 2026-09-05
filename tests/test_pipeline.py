@@ -14,7 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from clipper.config import load_config
-from clipper.models import Candidate, ClipPlan, CropKeyframe, Shot, Word
+from clipper.models import Candidate, ClipPlan, CropKeyframe, Segment, Shot, Word
 from clipper.stages.captions import _blocks, _render_block, _wrap
 from clipper.stages.render import _crop_x_expr, _ffmpeg_args
 from clipper.stages.scenes import snap_end_within, snap_to_shots
@@ -392,3 +392,44 @@ def test_render_audio_rate_does_not_depend_on_loudnorm(cfg):
 
     assert "loudnorm" not in " ".join(args)
     assert args[args.index("-ar") + 1] == str(cfg["render"]["audio_rate"])
+
+
+# --- Duration bounds --------------------------------------------------------
+
+def test_finalize_never_ships_a_clip_outside_the_range(cfg):
+    """min_duration/max_duration are bounds, not suggestions. The floor used to
+    carry an 0.8 slack factor that let clips ship up to 20% short."""
+    cfg["select"].update(clips=0, min_score=0, min_duration=60.0, max_duration=90.0)
+    s = shots(0.0, 30.0, 45.0, 70.0, 95.0, 130.0, 200.0)
+    out = _finalize(
+        [
+            Candidate(start=0.0, end=30.0, title="asked short", score=90),
+            Candidate(start=95.0, end=200.0, title="asked long", score=80),
+        ],
+        s,
+        cfg,
+    )
+    for c in out:
+        assert 60.0 <= c.end - c.start <= 90.0, (c.title, c.end - c.start)
+
+
+def test_finalize_drops_a_clip_that_cannot_reach_min_duration(cfg):
+    """At the tail of a video no boundary sits far enough out. Dropping is
+    correct - shipping a 30s clip when 60s was asked for is not."""
+    cfg["select"].update(clips=0, min_score=0, min_duration=60.0, max_duration=90.0)
+    s = shots(0.0, 10.0, 20.0, 30.0)  # material ends at 30s
+    out = _finalize([Candidate(start=0.0, end=25.0, title="tail", score=99)], s, cfg)
+    assert out == []
+
+
+def test_word_drift_does_not_push_a_clip_past_max_duration(cfg):
+    """_avoid_word_split only ever grows a clip; it must not breach the ceiling."""
+    cfg["select"].update(clips=0, min_score=0, min_duration=60.0, max_duration=90.0)
+    s = shots(0.0, 30.0, 60.0, 90.0, 150.0)
+    segs = [Segment(start=0.0, end=150.0, text="x",
+                    words=[Word(start=89.8, end=90.4, text="over")])]
+    out = _finalize(
+        [Candidate(start=0.0, end=90.0, title="edge", score=90)], s, cfg, segs
+    )
+    for c in out:
+        assert c.end - c.start <= 90.0, c.end - c.start
